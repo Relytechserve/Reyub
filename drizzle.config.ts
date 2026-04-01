@@ -1,5 +1,10 @@
-import "dotenv/config";
+import { config } from "dotenv";
+import { resolve } from "path";
 import { defineConfig } from "drizzle-kit";
+
+// drizzle-kit does not load `.env.local` by default; Next.js does.
+config({ path: resolve(process.cwd(), ".env.local") });
+config({ path: resolve(process.cwd(), ".env") });
 
 export default defineConfig({
   schema: "./db/schema.ts",

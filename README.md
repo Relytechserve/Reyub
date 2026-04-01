@@ -20,6 +20,12 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 
 2. Set `DATABASE_URL`, `AUTH_SECRET`, and `NEXTAUTH_URL` in `.env.local`.
 
+   - **`AUTH_SECRET`** — A long random string used by [Auth.js](https://authjs.dev) to sign and encrypt session tokens and cookies. It is **not** your password. Generate one locally and never commit it:
+     ```bash
+     openssl rand -base64 32
+     ```
+   - **`DATABASE_URL`** — Must live in `.env.local`. Drizzle CLI (`npm run db:push`) loads `.env.local` via `drizzle.config.ts` (not only `.env`).
+
 3. Apply the database schema:
 
    ```bash
