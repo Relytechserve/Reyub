@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 
+import { runQogitaKeepaSync } from "@/lib/sync/qogita-keepa";
+
 /**
- * Daily sync entry point (07:00 UK — configured in vercel.json).
- * Implement Qogita / Keepa / eBay ingestion and scoring here.
+ * Daily sync (07:00 UTC in vercel.json — adjust for UK). Set CRON_SECRET and
+ * Authorization: Bearer <CRON_SECRET> for non-Vercel callers.
  */
 export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
@@ -11,8 +13,11 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return NextResponse.json({
-    ok: true,
-    message: "Sync stub — wire ingestion and sku_scores in a later iteration.",
-  });
+  try {
+    const result = await runQogitaKeepaSync();
+    return NextResponse.json({ ok: true, ...result });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
 }

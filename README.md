@@ -53,6 +53,12 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 | `npm run db:studio` | Drizzle Studio |
 | `npm run qogita:auth` | Test Qogita login (uses `.env.local`; prints token length only) |
 
+### Qogita + Keepa sync
+
+- Dashboard: **Sync Qogita + Keepa (UK)** pulls `GET /offers/`, upserts `qogita_products`, then batches EANs to [Keepa Product](https://keepa.com/#!discuss/t/request-products/110) (`domain=2`, `stats=30`, `history=0`).
+- Env: `QOGITA_EMAIL`, `QOGITA_PASSWORD`, `KEEPA_API_KEY`, optional `QOGITA_SYNC_MAX_OFFERS` (default `100`).
+- Cron: `GET /api/cron/sync` runs the same sync (optional `CRON_SECRET`).
+
 ### Qogita API token
 
 The Buyer API issues tokens via **`POST https://api.qogita.com/auth/login/`** with `email` and `password` ([API reference](https://qogita.readme.io/reference/auth_login_create)). This app **does not require you to paste a token by hand**: set **`QOGITA_EMAIL`** and **`QOGITA_PASSWORD`** in `.env.local` and Vercel; server code calls `getQogitaAccessToken()` in `lib/qogita/auth.ts`, which logs in and caches the access token until it expires.

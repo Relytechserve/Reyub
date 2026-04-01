@@ -1,10 +1,10 @@
 # Reyub — Product Requirements Specification
 
-**Version:** 0.2.0  
+**Version:** 0.3.0  
 **Last updated:** 2026-04-01  
 **Status:** Living document — update as the product evolves.
 
-**Implementation:** Next.js app in this repo (`reyub`), Drizzle schema in `db/schema.ts`, Auth.js email/password, Neon via `DATABASE_URL`. See root `README.md`.
+**Implementation:** Next.js app in this repo (`reyub`), Drizzle schema in `db/schema.ts`, Auth.js email/password, Neon via `DATABASE_URL`, Qogita offers + Keepa UK matching on `/dashboard`. See root `README.md`.
 
 ---
 
@@ -131,6 +131,7 @@ Key entities: `users`, `user_settings`, `fx_rates`, `shipping_rules`, `categorie
 |---------|------|--------|---------|
 | 0.1.0 | 2026-04-01 | — | Initial consolidated spec from discovery. |
 | 0.2.0 | 2026-04-01 | — | Repo scaffold: Next.js, Drizzle schema, auth, cron stub, `README`. |
+| 0.3.0 | 2026-04-01 | — | Qogita `/offers/` ingest, Keepa UK EAN match, dashboard table, cron sync. |
 
 ---
 
