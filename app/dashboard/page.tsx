@@ -39,15 +39,23 @@ export default async function DashboardPage() {
 
       <section className="rounded-2xl border border-dashed border-zinc-300 bg-zinc-50 p-8 dark:border-zinc-700 dark:bg-zinc-900/40">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-          Next steps
+          You&apos;re signed in — product UI is next
         </h2>
-        <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
-          <li>Connect Neon and run database migrations.</li>
-          <li>Add Qogita, Keepa, and eBay sync jobs (see docs).</li>
-          <li>Build Top 20 and watchlist views from scored SKUs.</li>
+        <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+          Auth, database, and deploy are wired. What you see here is a placeholder until
+          sourcing data and scoring are implemented.
+        </p>
+        <h3 className="mt-6 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+          Build order
+        </h3>
+        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
+          <li>Ingest Qogita catalog (MVP categories) into the database.</li>
+          <li>Match EAN/GTIN to Amazon (Keepa) and, when ready, eBay UK sold prices.</li>
+          <li>Compute margins and scores; ship Top opportunities + watchlist views.</li>
+          <li>Alerts (in-app + Resend) and account settings for margins, VAT, FX, shipping.</li>
         </ul>
         <p className="mt-6 text-sm text-zinc-600 dark:text-zinc-400">
-          Product requirements: <code className="rounded bg-zinc-200 px-1.5 py-0.5 text-xs dark:bg-zinc-800">docs/REQUIREMENTS.md</code>
+          Spec: <code className="rounded bg-zinc-200 px-1.5 py-0.5 text-xs dark:bg-zinc-800">docs/REQUIREMENTS.md</code>
         </p>
       </section>
     </div>
