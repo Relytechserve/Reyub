@@ -54,9 +54,9 @@ The handler is currently a **stub**; implement Qogita / Keepa / eBay ingestion a
 
 ## Repository
 
-Initialize a remote when ready:
+Remote: [github.com/Relytechserve/Reyub](https://github.com/Relytechserve/Reyub)
 
 ```bash
-git remote add origin <your-repo-url>
+git remote add origin https://github.com/Relytechserve/Reyub.git
 git push -u origin main
 ```
