@@ -51,6 +51,13 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 | `npm run db:generate` | Generate Drizzle migrations from `db/schema.ts` |
 | `npm run db:push` | Push schema to the database (dev-friendly) |
 | `npm run db:studio` | Drizzle Studio |
+| `npm run qogita:auth` | Test Qogita login (uses `.env.local`; prints token length only) |
+
+### Qogita API token
+
+The Buyer API issues tokens via **`POST https://api.qogita.com/auth/login/`** with `email` and `password` ([API reference](https://qogita.readme.io/reference/auth_login_create)). This app **does not require you to paste a token by hand**: set **`QOGITA_EMAIL`** and **`QOGITA_PASSWORD`** in `.env.local` and Vercel; server code calls `getQogitaAccessToken()` in `lib/qogita/auth.ts`, which logs in and caches the access token until it expires.
+
+Optional **`QOGITA_API_TOKEN`** overrides login if you want to pin a token yourself (advanced).
 
 ## Cron (daily sync)
 
