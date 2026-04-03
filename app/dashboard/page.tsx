@@ -13,10 +13,13 @@ import {
 } from "@/lib/margin/estimate";
 import {
   getDashboardInventorySummary,
+  getLatestSyncRun,
+  listRecentQogitaExtractions,
   listTopKeepaDashboardRows,
 } from "@/lib/sync/qogita-keepa";
 
 import { DashboardFilters } from "./dashboard-filters";
+import { ExtractionDiagnostics } from "./extraction-diagnostics";
 import { KeepaTopTable } from "./keepa-table";
 import { SyncQogitaKeepaForm } from "./sync-form";
 
@@ -92,7 +95,19 @@ export default async function DashboardPage({
 
   const topRows = marginFiltered.slice(0, 20);
 
-  const summary = await getDashboardInventorySummary();
+  const [summary, latestRun, qogitaSamples] = await Promise.all([
+    getDashboardInventorySummary(),
+    getLatestSyncRun(),
+    listRecentQogitaExtractions(15),
+  ]);
+
+  const envHints = {
+    keepaKeyPresent: Boolean(process.env.KEEPA_API_KEY?.trim()),
+    qogitaAuthPresent:
+      (Boolean(process.env.QOGITA_EMAIL?.trim()) &&
+        Boolean(process.env.QOGITA_PASSWORD?.trim())) ||
+      Boolean(process.env.QOGITA_API_TOKEN?.trim()),
+  };
 
   return (
     <div className="mx-auto flex min-h-[80vh] w-full max-w-7xl flex-col gap-8 px-4 py-12">
@@ -164,6 +179,12 @@ export default async function DashboardPage({
           </p>
         ) : null}
       </section>
+
+      <ExtractionDiagnostics
+        latestRun={latestRun}
+        qogitaSamples={qogitaSamples}
+        envHints={envHints}
+      />
 
       <Suspense fallback={null}>
         <DashboardFilters showMargin={showMargin} minMarginPct={minM} />

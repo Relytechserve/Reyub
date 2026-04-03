@@ -5,6 +5,7 @@ import {
   priceSnapshots,
   productMatches,
   qogitaProducts,
+  syncRuns,
 } from "@/db/schema";
 import {
   ensureAmazonExternalRef,
@@ -18,7 +19,11 @@ import {
   formatGbpFromKeepaMinor,
   type KeepaProduct,
 } from "@/lib/keepa/product";
-import { fetchOffersUpTo, mapOfferToRow } from "@/lib/qogita/offers";
+import {
+  fetchOffersUpTo,
+  mapOfferToRow,
+  qogitaOffersEntryPath,
+} from "@/lib/qogita/offers";
 
 export type QogitaKeepaSyncResult = {
   offersFetched: number;
@@ -28,6 +33,22 @@ export type QogitaKeepaSyncResult = {
   keepaRowsSaved: number;
   matchesUpserted: number;
   errors: string[];
+};
+
+export type SyncRunDiagnosticsStats = {
+  offersFetched: number;
+  qogitaRowsUpserted: number;
+  offersWithEanInBatch: number;
+  uniqueEansSentToKeepa: number;
+  keepaKeyConfigured: boolean;
+  keepaApiCalled: boolean;
+  keepaProductsReturned: number;
+  keepaRowsSaved: number;
+  keepaSkippedNoAsin: number;
+  matchesWithQogitaEan: number;
+  qogitaOffersPath: string;
+  categoryFilterApplied: boolean;
+  categoryNote: string;
 };
 
 function keepaEansFromProduct(p: KeepaProduct): string[] {
@@ -50,15 +71,86 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
   const errors: string[] = [];
   const maxOffers = Number(process.env.QOGITA_SYNC_MAX_OFFERS ?? "100") || 100;
   const keepaKey = process.env.KEEPA_API_KEY?.trim();
+  const db = getDb();
+  const startedAt = new Date();
+  const [runRow] = await db
+    .insert(syncRuns)
+    .values({ startedAt, status: "running" })
+    .returning({ id: syncRuns.id });
+  const runId = runRow?.id ?? null;
 
-  const offers = await fetchOffersUpTo(maxOffers);
+  let offersFetched = 0;
+  let qogitaRowsUpserted = 0;
+  let offersWithEanInBatch = 0;
+  let withEan = 0;
+  let keepaProductsReturned = 0;
+  let keepaRowsSaved = 0;
+  let matchesUpserted = 0;
+  let keepaSkippedNoAsin = 0;
+  let keepaApiCalled = false;
+
+  const persistSyncRun = async () => {
+    if (!runId) {
+      return;
+    }
+    const stats: SyncRunDiagnosticsStats = {
+      offersFetched,
+      qogitaRowsUpserted,
+      offersWithEanInBatch,
+      uniqueEansSentToKeepa: withEan,
+      keepaKeyConfigured: Boolean(keepaKey),
+      keepaApiCalled,
+      keepaProductsReturned,
+      keepaRowsSaved,
+      keepaSkippedNoAsin,
+      matchesWithQogitaEan: matchesUpserted,
+      qogitaOffersPath: qogitaOffersEntryPath(),
+      categoryFilterApplied: false,
+      categoryNote:
+        "Dashboard category preferences (health & beauty, fragrance, household) do not filter Qogita GET offers unless you add query params via QOGITA_OFFERS_PATH.",
+    };
+    let status: "success" | "partial" | "failed" = "success";
+    if (errors.length > 0) {
+      status =
+        qogitaRowsUpserted > 0 || keepaRowsSaved > 0 ? "partial" : "failed";
+    }
+    await db
+      .update(syncRuns)
+      .set({
+        finishedAt: new Date(),
+        status,
+        stats,
+        error: errors.length > 0 ? errors.slice(0, 12).join(" | ") : null,
+      })
+      .where(eq(syncRuns.id, runId));
+  };
+
+  let offers: unknown[] = [];
+  try {
+    offers = await fetchOffersUpTo(maxOffers);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    errors.push(`Qogita fetch failed: ${msg}`);
+    await persistSyncRun();
+    return {
+      offersFetched: 0,
+      qogitaRowsUpserted: 0,
+      withEan: 0,
+      keepaProductsReturned: 0,
+      keepaRowsSaved: 0,
+      matchesUpserted: 0,
+      errors,
+    };
+  }
+
+  offersFetched = offers.length;
   const rows = offers
     .map(mapOfferToRow)
     .filter((r): r is NonNullable<typeof r> => r !== null);
 
-  const db = getDb();
-  let qogitaRowsUpserted = 0;
+  offersWithEanInBatch = rows.filter((r) => r.ean).length;
 
+  try {
   for (const row of rows) {
     try {
       await db
@@ -124,10 +216,13 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
   }
 
   const eans = [...eanToQogitaId.keys()];
+  withEan = eans.length;
   let keepaProducts: KeepaProduct[] = [];
   if (keepaKey && eans.length > 0) {
+    keepaApiCalled = true;
     try {
       keepaProducts = await fetchKeepaProductsByProductCodes(eans, keepaKey);
+      keepaProductsReturned = keepaProducts.length;
     } catch (e) {
       errors.push(`Keepa: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -141,13 +236,12 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
     );
   }
 
-  let matchesUpserted = 0;
-  let keepaRowsSaved = 0;
   const now = new Date();
 
   for (const kp of keepaProducts) {
     const summary = extractListingSummary(kp);
     if (!summary.asin) {
+      keepaSkippedNoAsin += 1;
       continue;
     }
 
@@ -280,15 +374,31 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
     }
   }
 
+  await persistSyncRun();
+
   return {
-    offersFetched: offers.length,
+    offersFetched,
     qogitaRowsUpserted,
-    withEan: eans.length,
-    keepaProductsReturned: keepaProducts.length,
+    withEan,
+    keepaProductsReturned,
     keepaRowsSaved,
     matchesUpserted,
     errors,
   };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    errors.push(`Sync failed: ${msg}`);
+    await persistSyncRun();
+    return {
+      offersFetched,
+      qogitaRowsUpserted,
+      withEan,
+      keepaProductsReturned,
+      keepaRowsSaved,
+      matchesUpserted,
+      errors,
+    };
+  }
 }
 
 export type KeepaDashboardRow = {
@@ -481,4 +591,31 @@ export async function getDashboardInventorySummary(): Promise<DashboardInventory
     amazonUkMatches: amz?.c ?? 0,
     withKeepaSnapshot,
   };
+}
+
+/** Latest completed sync row (running or finished) for dashboard diagnostics. */
+export async function getLatestSyncRun() {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(syncRuns)
+    .orderBy(desc(syncRuns.startedAt))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Recent rows from `qogita_products` to verify extraction (EAN/category). */
+export async function listRecentQogitaExtractions(limit = 15) {
+  const db = getDb();
+  return db
+    .select({
+      qogitaId: qogitaProducts.qogitaId,
+      title: qogitaProducts.title,
+      ean: qogitaProducts.ean,
+      categorySlug: qogitaProducts.categorySlug,
+      updatedAt: qogitaProducts.updatedAt,
+    })
+    .from(qogitaProducts)
+    .orderBy(desc(qogitaProducts.updatedAt))
+    .limit(limit);
 }

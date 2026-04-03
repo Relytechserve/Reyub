@@ -60,6 +60,7 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 - Env: `QOGITA_EMAIL`, `QOGITA_PASSWORD`, `KEEPA_API_KEY`, optional `QOGITA_SYNC_MAX_OFFERS` (default `100`).
 - Cron: `GET /api/cron/sync` runs the same sync (optional `CRON_SECRET`).
 - Apply migration `0002_*` (or `npm run db:push`) so `product_matches.qogita_product_id` can be null for Amazon-only rows.
+- After each sync, the dashboard **Pipeline diagnostics** section reads `sync_runs` and shows how many Qogita offers were pulled, how many had EANs, whether Keepa was called, and how many ASIN snapshots were saved (so you can tell if the problem is mapping, EANs, or Keepa).
 
 ### Qogita API token
 

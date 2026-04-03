@@ -2,10 +2,20 @@ import { qogitaFetch } from "@/lib/qogita/client";
 
 const BASE = "https://api.qogita.com";
 
-/** Pull offers from GET /offers/ (paginated when API provides next / page). */
+/** First path segment for offers (override e.g. `/offers/?category=…` if API supports it). */
+export function qogitaOffersEntryPath(): string {
+  const raw = process.env.QOGITA_OFFERS_PATH?.trim();
+  if (!raw) {
+    return "/offers/";
+  }
+  const p = raw.startsWith("/") ? raw : `/${raw}`;
+  return p.includes("?") ? p : p.endsWith("/") ? p : `${p}/`;
+}
+
+/** Pull offers (paginated when API provides next / page). */
 export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
   const collected: unknown[] = [];
-  let path = "/offers/";
+  let path = qogitaOffersEntryPath();
   let page = 1;
 
   for (let i = 0; i < 25 && collected.length < maxOffers; i++) {
@@ -121,8 +131,13 @@ export function mapOfferToRow(offer: unknown): {
 
   const ean =
     findGtin(o) ||
-    (typeof o.gtin === "string" ? normalizeGtin(o.gtin) : null) ||
-    (typeof o.ean === "string" ? normalizeGtin(o.ean) : null);
+    normalizeGtinFromUnknown(o.gtin) ||
+    normalizeGtinFromUnknown(o.ean) ||
+    normalizeGtinFromUnknown(nestedValue(o, ["variant", "gtin"])) ||
+    normalizeGtinFromUnknown(nestedValue(o, ["variant", "ean"])) ||
+    normalizeGtinFromUnknown(nestedValue(o, ["product", "gtin"])) ||
+    normalizeGtinFromUnknown(nestedValue(o, ["product", "ean"])) ||
+    normalizeGtinFromUnknown(nestedValue(o, ["sku", "gtin"]));
 
   const title =
     stringFrom(o, ["title", "name", "product_name"]) ||
@@ -185,6 +200,16 @@ function pickQogitaId(o: Record<string, unknown>): string | null {
   return null;
 }
 
+function normalizeGtinFromUnknown(v: unknown): string | null {
+  if (typeof v === "string") {
+    return normalizeGtin(v);
+  }
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return normalizeGtin(String(Math.trunc(v)));
+  }
+  return null;
+}
+
 function nestedValue(
   o: Record<string, unknown>,
   path: string[]
@@ -216,14 +241,17 @@ function findGtin(o: Record<string, unknown>): string | null {
     const rec = cur as Record<string, unknown>;
     for (const [k, v] of Object.entries(rec)) {
       const kl = k.toLowerCase();
-      if (
-        (kl === "gtin" ||
-          kl === "ean" ||
-          kl.includes("barcode") ||
-          kl === "international_article_number") &&
-        typeof v === "string"
-      ) {
-        const n = normalizeGtin(v);
+      const isBarcodeKey =
+        kl === "gtin" ||
+        kl === "ean" ||
+        kl === "upc" ||
+        kl.endsWith("_gtin") ||
+        kl.endsWith("_ean") ||
+        kl.includes("barcode") ||
+        kl === "international_article_number" ||
+        kl === "article_number";
+      if (isBarcodeKey) {
+        const n = normalizeGtinFromUnknown(v);
         if (n) {
           return n;
         }

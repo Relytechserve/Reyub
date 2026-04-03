@@ -11,10 +11,17 @@ export function KeepaTopTable({
 }) {
   if (rows.length === 0) {
     return (
-      <p className="mt-4 text-sm text-zinc-600 dark:text-zinc-400">
-        No Keepa rows to show yet. Run a sync — you need Qogita offers with EANs and a
-        valid <code className="text-xs">KEEPA_API_KEY</code>.
-      </p>
+      <div className="mt-4 space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-300">
+        <p className="font-medium text-zinc-900 dark:text-zinc-100">
+          No Keepa-backed rows in the Top 20 ranking yet.
+        </p>
+        <p>
+          Open <strong>Pipeline diagnostics</strong> above: it shows whether Qogita
+          offers were saved, how many had EANs, whether the Keepa API ran, and how
+          many ASINs were stored. A valid <code className="text-xs">KEEPA_API_KEY</code>{" "}
+          only helps if at least one EAN was sent to Keepa.
+        </p>
+      </div>
     );
   }
 
