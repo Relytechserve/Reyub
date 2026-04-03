@@ -23,6 +23,7 @@ export async function syncQogitaKeepaAction(
       qogitaRowsUpserted: 0,
       withEan: 0,
       keepaProductsReturned: 0,
+      keepaRowsSaved: 0,
       matchesUpserted: 0,
       errors: ["Not signed in."],
     };

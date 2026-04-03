@@ -55,9 +55,11 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 
 ### Qogita + Keepa sync
 
-- Dashboard: **Sync Qogita + Keepa (UK)** pulls `GET /offers/`, upserts `qogita_products`, then batches EANs to [Keepa Product](https://keepa.com/#!discuss/t/request-products/110) (`domain=2`, `stats=30`, `history=0`).
+- Dashboard: **Sync Qogita + Keepa (UK)** pulls `GET /offers/`, upserts `qogita_products`, then batches EANs to [Keepa Product](https://keepa.com/#!discuss/t/request-products/110) (`domain=2`, `stats=30`, `history=0`). **Every** ASIN Keepa returns is stored (with a price snapshot); Qogita is linked when the same GTIN appears on an offer.
+- The dashboard **Top 20** table ranks listings by 30-day sales-rank drops (velocity), then BSR. Optional **margin** column: `?margin=1&min=10` or the on-page checkbox.
 - Env: `QOGITA_EMAIL`, `QOGITA_PASSWORD`, `KEEPA_API_KEY`, optional `QOGITA_SYNC_MAX_OFFERS` (default `100`).
 - Cron: `GET /api/cron/sync` runs the same sync (optional `CRON_SECRET`).
+- Apply migration `0002_*` (or `npm run db:push`) so `product_matches.qogita_product_id` can be null for Amazon-only rows.
 
 ### Qogita API token
 

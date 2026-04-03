@@ -43,8 +43,9 @@ export function SyncQogitaKeepaForm() {
             <li>Offers pulled: {state.offersFetched}</li>
             <li>Qogita rows upserted: {state.qogitaRowsUpserted}</li>
             <li>With EAN: {state.withEan}</li>
-            <li>Keepa products: {state.keepaProductsReturned}</li>
-            <li>Matches (supply ↔ demand): {state.matchesUpserted}</li>
+            <li>Keepa products returned: {state.keepaProductsReturned}</li>
+            <li>Amazon listings saved (Keepa snapshot): {state.keepaRowsSaved}</li>
+            <li>Of those, with Qogita offer (same GTIN): {state.matchesUpserted}</li>
           </ul>
           {state.errors.length > 0 ? (
             <ul className="mt-3 list-inside list-disc text-amber-800 dark:text-amber-200">

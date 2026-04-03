@@ -62,6 +62,8 @@ export function extractListingSummary(p: KeepaProduct): {
   title: string;
   buyBoxMinor?: number;
   salesRank?: number;
+  salesRankDrops30?: number;
+  avg30BuyBoxMinor?: number;
   statsSnippet: Record<string, unknown>;
 } {
   const asin = typeof p.asin === "string" ? p.asin : "";
@@ -83,6 +85,19 @@ export function extractListingSummary(p: KeepaProduct): {
     salesRank = stats.currentSalesRank;
   }
 
+  let salesRankDrops30: number | undefined;
+  if (typeof stats.salesRankDrops30 === "number" && stats.salesRankDrops30 >= 0) {
+    salesRankDrops30 = Math.floor(stats.salesRankDrops30);
+  }
+
+  let avg30BuyBoxMinor: number | undefined;
+  if (Array.isArray(stats.avg30)) {
+    const a = stats.avg30 as unknown[];
+    if (typeof a[0] === "number" && a[0] > 0) {
+      avg30BuyBoxMinor = a[0];
+    }
+  }
+
   const statsSnippet: Record<string, unknown> = {
     buyBoxPrice: stats.buyBoxPrice,
     current: stats.current,
@@ -93,7 +108,15 @@ export function extractListingSummary(p: KeepaProduct): {
     currentSalesRank: stats.currentSalesRank,
   };
 
-  return { asin, title, buyBoxMinor, salesRank, statsSnippet };
+  return {
+    asin,
+    title,
+    buyBoxMinor,
+    salesRank,
+    salesRankDrops30,
+    avg30BuyBoxMinor,
+    statsSnippet,
+  };
 }
 
 /** Convert Keepa minor units to display GBP (approximate; Keepa uses integer minor). */

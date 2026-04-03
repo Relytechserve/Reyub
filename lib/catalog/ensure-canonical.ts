@@ -217,6 +217,63 @@ export function amazonExternalKey(domainId: number, asin: string): string {
   return `${domainId}:${asin}`;
 }
 
+/**
+ * Canonical row for an Amazon ASIN when no Qogita row is linked yet.
+ * Reuses a canonical if the same ASIN was seen or `primary_ean` matches.
+ */
+export async function ensureCanonicalForAmazonListing(
+  db: Db,
+  domainId: number,
+  asin: string,
+  title: string,
+  primaryEan: string | null
+): Promise<string> {
+  const extKey = amazonExternalKey(domainId, asin);
+  const existingRef = await db
+    .select({ canonicalProductId: productExternalRefs.canonicalProductId })
+    .from(productExternalRefs)
+    .where(
+      and(
+        eq(productExternalRefs.source, "amazon"),
+        eq(productExternalRefs.externalKey, extKey)
+      )
+    )
+    .limit(1);
+
+  if (existingRef[0]) {
+    return existingRef[0].canonicalProductId;
+  }
+
+  if (primaryEan) {
+    const byEan = await db
+      .select({ id: canonicalProducts.id })
+      .from(canonicalProducts)
+      .where(eq(canonicalProducts.primaryEan, primaryEan))
+      .limit(1);
+    if (byEan[0]) {
+      await ensureAmazonExternalRef(db, byEan[0].id, domainId, asin, {
+        asin,
+        title,
+      });
+      return byEan[0].id;
+    }
+  }
+
+  const inserted = await db
+    .insert(canonicalProducts)
+    .values({
+      title,
+      primaryEan: primaryEan ?? null,
+    })
+    .returning({ id: canonicalProducts.id });
+  const row = inserted[0];
+  if (!row) {
+    throw new Error("Failed to insert canonical_products");
+  }
+  await ensureAmazonExternalRef(db, row.id, domainId, asin, { asin, title });
+  return row.id;
+}
+
 export async function ensureAmazonExternalRef(
   db: Db,
   canonicalId: string,

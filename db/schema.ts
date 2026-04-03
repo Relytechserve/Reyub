@@ -273,9 +273,10 @@ export const productMatches = pgTable(
   "product_matches",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    qogitaProductId: uuid("qogita_product_id")
-      .notNull()
-      .references(() => qogitaProducts.id, { onDelete: "cascade" }),
+    /** Null when we only have Amazon/Keepa data (no Qogita offer for that ASIN yet). */
+    qogitaProductId: uuid("qogita_product_id").references(() => qogitaProducts.id, {
+      onDelete: "set null",
+    }),
     canonicalProductId: uuid("canonical_product_id").references(
       () => canonicalProducts.id,
       { onDelete: "set null" }

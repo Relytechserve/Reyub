@@ -15,6 +15,13 @@
       "when": 1775219020624,
       "tag": "0001_burly_tana_nile",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775219676278,
+      "tag": "0002_pretty_stryfe",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import {
   ensureAmazonExternalRef,
+  ensureCanonicalForAmazonListing,
   ensureCanonicalForQogitaProductId,
   KEEPA_DOMAIN_UK,
 } from "@/lib/catalog/ensure-canonical";
@@ -24,6 +25,7 @@ export type QogitaKeepaSyncResult = {
   qogitaRowsUpserted: number;
   withEan: number;
   keepaProductsReturned: number;
+  keepaRowsSaved: number;
   matchesUpserted: number;
   errors: string[];
 };
@@ -127,15 +129,20 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
     try {
       keepaProducts = await fetchKeepaProductsByProductCodes(eans, keepaKey);
     } catch (e) {
-      errors.push(
-        `Keepa: ${e instanceof Error ? e.message : String(e)}`
-      );
+      errors.push(`Keepa: ${e instanceof Error ? e.message : String(e)}`);
     }
   } else if (!keepaKey && eans.length > 0) {
-    errors.push("KEEPA_API_KEY not set — Qogita offers saved; Amazon matching skipped.");
+    errors.push(
+      "KEEPA_API_KEY not set — Qogita offers saved; Amazon / Keepa data skipped."
+    );
+  } else if (eans.length === 0) {
+    errors.push(
+      "No EAN/GTIN on synced Qogita offers — add barcodes in Qogita or widen offer set so Keepa can return Amazon listings."
+    );
   }
 
   let matchesUpserted = 0;
+  let keepaRowsSaved = 0;
   const now = new Date();
 
   for (const kp of keepaProducts) {
@@ -143,6 +150,7 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
     if (!summary.asin) {
       continue;
     }
+
     const codeEans = keepaEansFromProduct(kp);
     let qogitaProductId: string | undefined;
     for (const e of codeEans) {
@@ -152,13 +160,42 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
         break;
       }
     }
-    if (!qogitaProductId) {
-      continue;
-    }
 
-    const qpRow = dbRows.find((r) => r.id === qogitaProductId);
-    if (!qpRow) {
-      continue;
+    const qpRow = qogitaProductId
+      ? dbRows.find((r) => r.id === qogitaProductId)
+      : undefined;
+
+    const primaryEan = codeEans[0] ?? null;
+
+    let canonicalId: string | null = null;
+    if (qpRow) {
+      let cid = qpRow.canonicalProductId;
+      if (!cid) {
+        cid = await ensureCanonicalForQogitaProductId(db, qpRow.id);
+      }
+      if (!cid) {
+        const refreshed = await db
+          .select({ canonicalProductId: qogitaProducts.canonicalProductId })
+          .from(qogitaProducts)
+          .where(eq(qogitaProducts.id, qpRow.id))
+          .limit(1);
+        cid = refreshed[0]?.canonicalProductId ?? null;
+      }
+      canonicalId = cid;
+      if (canonicalId) {
+        await ensureAmazonExternalRef(db, canonicalId, KEEPA_DOMAIN_UK, summary.asin, {
+          asin: summary.asin,
+          title: summary.title,
+        });
+      }
+    } else {
+      canonicalId = await ensureCanonicalForAmazonListing(
+        db,
+        KEEPA_DOMAIN_UK,
+        summary.asin,
+        summary.title,
+        primaryEan
+      );
     }
 
     const existing = await db
@@ -173,17 +210,18 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
       .limit(1);
 
     let matchId: string;
-    const canonicalId = qpRow.canonicalProductId;
+    const confidence = qpRow ? ("high" as const) : ("medium" as const);
+    const reasonTags = qpRow ? (["ean_exact"] as string[]) : (["keepa_amazon_only"] as string[]);
 
     if (existing[0]) {
       matchId = existing[0].id;
       await db
         .update(productMatches)
         .set({
-          qogitaProductId,
+          qogitaProductId: qpRow ? qpRow.id : null,
           canonicalProductId: canonicalId,
-          confidence: "high",
-          reasonTags: ["ean_exact"],
+          confidence,
+          reasonTags,
           updatedAt: now,
         })
         .where(eq(productMatches.id, matchId));
@@ -191,12 +229,12 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
       const inserted = await db
         .insert(productMatches)
         .values({
-          qogitaProductId,
+          qogitaProductId: qpRow ? qpRow.id : null,
           canonicalProductId: canonicalId,
           channel: "amazon_uk",
           externalId: summary.asin,
-          confidence: "high",
-          reasonTags: ["ean_exact"],
+          confidence,
+          reasonTags,
         })
         .returning({ id: productMatches.id });
       const ins = inserted[0];
@@ -206,14 +244,8 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
       matchId = ins.id;
     }
 
-    if (canonicalId) {
-      await ensureAmazonExternalRef(db, canonicalId, KEEPA_DOMAIN_UK, summary.asin, {
-        asin: summary.asin,
-        title: summary.title,
-      });
-    }
-
     const amazonGbp = formatGbpFromKeepaMinor(summary.buyBoxMinor);
+    const avg30Gbp = formatGbpFromKeepaMinor(summary.avg30BuyBoxMinor);
 
     await db.insert(priceSnapshots).values({
       productMatchId: matchId,
@@ -224,20 +256,28 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
         amazonTitle: summary.title,
         amazonBuyBoxGbp: amazonGbp,
         buyBoxMinor: summary.buyBoxMinor,
+        avg30BuyBoxGbp: avg30Gbp,
+        avg30BuyBoxMinor: summary.avg30BuyBoxMinor,
         salesRank: summary.salesRank,
+        salesRankDrops30: summary.salesRankDrops30,
         keepaStats: summary.statsSnippet,
-        qogita: {
-          qogitaId: qpRow.qogitaId,
-          title: qpRow.title,
-          ean: qpRow.ean,
-          buyUnitPrice: qpRow.buyUnitPrice,
-          currency: qpRow.currency,
-          stockUnits: qpRow.stockUnits,
-        },
+        qogita: qpRow
+          ? {
+              qogitaId: qpRow.qogitaId,
+              title: qpRow.title,
+              ean: qpRow.ean,
+              buyUnitPrice: qpRow.buyUnitPrice,
+              currency: qpRow.currency,
+              stockUnits: qpRow.stockUnits,
+            }
+          : null,
       },
     });
 
-    matchesUpserted += 1;
+    keepaRowsSaved += 1;
+    if (qpRow) {
+      matchesUpserted += 1;
+    }
   }
 
   return {
@@ -245,36 +285,66 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
     qogitaRowsUpserted,
     withEan: eans.length,
     keepaProductsReturned: keepaProducts.length,
+    keepaRowsSaved,
     matchesUpserted,
     errors,
   };
 }
 
-export type MatchedRow = {
-  qogitaId: string;
-  title: string;
-  ean: string | null;
-  buyUnitPrice: string | null;
-  currency: string;
-  stockUnits: number | null;
+export type KeepaDashboardRow = {
+  matchId: string;
   asin: string;
   amazonTitle: string | null;
   amazonBuyBoxGbp: string | null;
+  avg30BuyBoxGbp: string | null;
   salesRank: number | null;
+  salesRankDrops30: number | null;
   capturedAt: Date;
+  confidence: "high" | "medium";
+  qogitaId: string | null;
+  qogitaTitle: string | null;
+  ean: string | null;
+  buyUnitPrice: string | null;
+  currency: string | null;
+  stockUnits: number | null;
 };
 
-export async function listQogitaKeepaMatches(
-  limit = 50
-): Promise<MatchedRow[]> {
+function metricsVelocity(m: Record<string, unknown>): number {
+  if (typeof m.salesRankDrops30 === "number") {
+    return m.salesRankDrops30;
+  }
+  const ks = m.keepaStats;
+  if (ks && typeof ks === "object" && ks !== null) {
+    const d = (ks as Record<string, unknown>).salesRankDrops30;
+    if (typeof d === "number") {
+      return d;
+    }
+  }
+  return 0;
+}
+
+function metricsRank(m: Record<string, unknown>): number {
+  if (typeof m.salesRank === "number" && m.salesRank > 0) {
+    return m.salesRank;
+  }
+  return 99_999_999;
+}
+
+/**
+ * Latest Keepa snapshot per Amazon UK match, sorted by demand proxy (rank drops, then BSR).
+ */
+export async function listTopKeepaDashboardRows(
+  limit = 20
+): Promise<KeepaDashboardRow[]> {
   const db = getDb();
 
   const matches = await db
     .select({
       matchId: productMatches.id,
       asin: productMatches.externalId,
+      confidence: productMatches.confidence,
       qogitaQid: qogitaProducts.qogitaId,
-      title: qogitaProducts.title,
+      qogitaTitle: qogitaProducts.title,
       ean: qogitaProducts.ean,
       buyUnitPrice: qogitaProducts.buyUnitPrice,
       currency: qogitaProducts.currency,
@@ -282,13 +352,13 @@ export async function listQogitaKeepaMatches(
       qpUpdatedAt: qogitaProducts.updatedAt,
     })
     .from(productMatches)
-    .innerJoin(
+    .leftJoin(
       qogitaProducts,
       eq(productMatches.qogitaProductId, qogitaProducts.id)
     )
     .where(eq(productMatches.channel, "amazon_uk"))
     .orderBy(desc(productMatches.updatedAt))
-    .limit(limit);
+    .limit(500);
 
   if (matches.length === 0) {
     return [];
@@ -298,7 +368,12 @@ export async function listQogitaKeepaMatches(
   const snaps = await db
     .select()
     .from(priceSnapshots)
-    .where(inArray(priceSnapshots.productMatchId, matchIds))
+    .where(
+      and(
+        inArray(priceSnapshots.productMatchId, matchIds),
+        eq(priceSnapshots.source, "keepa")
+      )
+    )
     .orderBy(desc(priceSnapshots.capturedAt));
 
   const latestByMatch = new Map<string, (typeof snaps)[0]>();
@@ -308,23 +383,102 @@ export async function listQogitaKeepaMatches(
     }
   }
 
-  return matches.map((m) => {
-    const snap = latestByMatch.get(m.matchId);
-    const met = (snap?.metrics ?? {}) as Record<string, unknown>;
-    return {
-      qogitaId: m.qogitaQid,
-      title: m.title,
-      ean: m.ean,
-      buyUnitPrice: m.buyUnitPrice,
-      currency: m.currency,
-      stockUnits: m.stockUnits,
-      asin: m.asin,
-      amazonTitle:
-        typeof met.amazonTitle === "string" ? met.amazonTitle : null,
-      amazonBuyBoxGbp:
-        typeof met.amazonBuyBoxGbp === "string" ? met.amazonBuyBoxGbp : null,
-      salesRank: typeof met.salesRank === "number" ? met.salesRank : null,
-      capturedAt: snap?.capturedAt ?? m.qpUpdatedAt,
-    };
+  const withSnap = matches
+    .map((m) => {
+      const snap = latestByMatch.get(m.matchId);
+      if (!snap) {
+        return null;
+      }
+      const met = snap.metrics as Record<string, unknown>;
+      const qogita = met.qogita as Record<string, unknown> | null | undefined;
+      return {
+        matchId: m.matchId,
+        asin: m.asin,
+        amazonTitle:
+          typeof met.amazonTitle === "string" ? met.amazonTitle : null,
+        amazonBuyBoxGbp:
+          typeof met.amazonBuyBoxGbp === "string" ? met.amazonBuyBoxGbp : null,
+        avg30BuyBoxGbp:
+          typeof met.avg30BuyBoxGbp === "string" ? met.avg30BuyBoxGbp : null,
+        salesRank: typeof met.salesRank === "number" ? met.salesRank : null,
+        salesRankDrops30:
+          typeof met.salesRankDrops30 === "number"
+            ? met.salesRankDrops30
+            : null,
+        capturedAt: snap.capturedAt,
+        confidence: m.confidence,
+        qogitaId:
+          typeof qogita?.qogitaId === "string"
+            ? qogita.qogitaId
+            : (m.qogitaQid ?? null),
+        qogitaTitle:
+          typeof qogita?.title === "string"
+            ? qogita.title
+            : (m.qogitaTitle ?? null),
+        ean:
+          typeof qogita?.ean === "string"
+            ? qogita.ean
+            : (m.ean ?? null),
+        buyUnitPrice:
+          typeof qogita?.buyUnitPrice === "string"
+            ? qogita.buyUnitPrice
+            : m.buyUnitPrice,
+        currency:
+          typeof qogita?.currency === "string"
+            ? qogita.currency
+            : (m.currency ?? "EUR"),
+        stockUnits:
+          typeof qogita?.stockUnits === "number"
+            ? qogita.stockUnits
+            : m.stockUnits,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  withSnap.sort((a, b) => {
+    const ma = latestByMatch.get(a.matchId)?.metrics as Record<string, unknown>;
+    const mb = latestByMatch.get(b.matchId)?.metrics as Record<string, unknown>;
+    const vd = metricsVelocity(mb) - metricsVelocity(ma);
+    if (vd !== 0) {
+      return vd;
+    }
+    return metricsRank(ma) - metricsRank(mb);
   });
+
+  return withSnap.slice(0, limit);
+}
+
+export type DashboardInventorySummary = {
+  qogitaOffersInDb: number;
+  withEan: number;
+  amazonUkMatches: number;
+  withKeepaSnapshot: number;
+};
+
+export async function getDashboardInventorySummary(): Promise<DashboardInventorySummary> {
+  const db = getDb();
+  const [qogitaTotal] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(qogitaProducts);
+  const [withEanRow] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(qogitaProducts)
+    .where(isNotNull(qogitaProducts.ean));
+  const [amz] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(productMatches)
+    .where(eq(productMatches.channel, "amazon_uk"));
+
+  const snapRows = await db
+    .select({ productMatchId: priceSnapshots.productMatchId })
+    .from(priceSnapshots)
+    .where(eq(priceSnapshots.source, "keepa"));
+  const withKeepaSnapshot = new Set(snapRows.map((r) => r.productMatchId)).size;
+
+  return {
+    qogitaOffersInDb: qogitaTotal?.c ?? 0,
+    withEan: withEanRow?.c ?? 0,
+    amazonUkMatches: amz?.c ?? 0,
+    withKeepaSnapshot,
+  };
 }
