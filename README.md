@@ -32,7 +32,7 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
    npm run db:push
    ```
 
-   Or use generated SQL migrations under `drizzle/migrations/` with your migration runner.
+   Or apply SQL migrations under `drizzle/migrations/` (e.g. `0001_*` adds the **global catalog** tables and MVP category seeds) with your migration runner / `npm run db:migrate`.
 
 4. Run the app:
 
@@ -69,7 +69,7 @@ Optional **`QOGITA_API_TOKEN`** overrides login if you want to pin a token yours
 
 `vercel.json` schedules `GET /api/cron/sync` at **07:00 UTC** (adjust schedule or use Vercel project timezone as needed). Set optional `CRON_SECRET` and send `Authorization: Bearer <CRON_SECRET>` for non-Vercel callers.
 
-The handler is currently a **stub**; implement Qogita / Keepa / eBay ingestion and scoring there.
+The handler runs the same **Qogita + Keepa** sync as the dashboard (`runQogitaKeepaSync`), updating the **global catalog** (`canonical_products`, `product_external_refs`, `product_category_links`) and `product_matches` / `price_snapshots`.
 
 ## Repository
 

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   date,
@@ -135,11 +136,112 @@ export const categories = pgTable(
   }
 );
 
+/** Global catalog: one identity per product, shared across all tenants. */
+export const canonicalProducts = pgTable(
+  "canonical_products",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    primaryEan: text("primary_ean"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [index("canonical_products_primary_ean_idx").on(t.primaryEan)]
+);
+
+/**
+ * Maps marketplace-specific category keys → internal `categories` rows.
+ * Sources: qogita | amazon | ebay
+ */
+export const categorySourceMappings = pgTable(
+  "category_source_mappings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    source: text("source").notNull(),
+    sourceKey: text("source_key").notNull(),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    uniqueIndex("category_source_mappings_source_key_uidx").on(
+      t.source,
+      t.sourceKey
+    ),
+    index("category_source_mappings_category_idx").on(t.categoryId),
+  ]
+);
+
+/** External listing/SKU keys pointing at a canonical product (global). */
+export const productExternalRefs = pgTable(
+  "product_external_refs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canonicalProductId: uuid("canonical_product_id")
+      .notNull()
+      .references(() => canonicalProducts.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    externalKey: text("external_key").notNull(),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    uniqueIndex("product_external_refs_source_key_uidx").on(
+      t.source,
+      t.externalKey
+    ),
+    index("product_external_refs_canonical_idx").on(t.canonicalProductId),
+  ]
+);
+
+/** Multi-label categories per canonical product; at most one `is_primary` (partial unique). */
+export const productCategoryLinks = pgTable(
+  "product_category_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canonicalProductId: uuid("canonical_product_id")
+      .notNull()
+      .references(() => canonicalProducts.id, { onDelete: "cascade" }),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    uniqueIndex("product_category_links_product_cat_source_uidx").on(
+      t.canonicalProductId,
+      t.categoryId,
+      t.source
+    ),
+    uniqueIndex("product_category_links_one_primary_uidx")
+      .on(t.canonicalProductId)
+      .where(sql`${t.isPrimary} = true`),
+    index("product_category_links_category_idx").on(t.categoryId),
+  ]
+);
+
 export const qogitaProducts = pgTable(
   "qogita_products",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     qogitaId: text("qogita_id").notNull().unique(),
+    canonicalProductId: uuid("canonical_product_id").references(
+      () => canonicalProducts.id,
+      { onDelete: "set null" }
+    ),
     ean: text("ean"),
     title: text("title").notNull(),
     brand: text("brand"),
@@ -163,6 +265,7 @@ export const qogitaProducts = pgTable(
   (t) => [
     index("qogita_products_ean_idx").on(t.ean),
     index("qogita_products_category_idx").on(t.categorySlug),
+    index("qogita_products_canonical_idx").on(t.canonicalProductId),
   ]
 );
 
@@ -173,6 +276,10 @@ export const productMatches = pgTable(
     qogitaProductId: uuid("qogita_product_id")
       .notNull()
       .references(() => qogitaProducts.id, { onDelete: "cascade" }),
+    canonicalProductId: uuid("canonical_product_id").references(
+      () => canonicalProducts.id,
+      { onDelete: "set null" }
+    ),
     channel: text("channel").notNull(), // amazon_uk | ebay_uk | amazon_de ...
     externalId: text("external_id").notNull(),
     confidence: matchConfidenceEnum("confidence").notNull(),
@@ -186,6 +293,7 @@ export const productMatches = pgTable(
   },
   (t) => [
     index("product_matches_qogita_idx").on(t.qogitaProductId),
+    index("product_matches_canonical_idx").on(t.canonicalProductId),
     uniqueIndex("product_matches_channel_ext_uidx").on(t.channel, t.externalId),
   ]
 );
@@ -304,6 +412,62 @@ export const syncRuns = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index("sync_runs_started_idx").on(t.startedAt)]
+);
+
+/** Optional order feed: CSV upload or future connector run (per user). */
+export const orderImportBatches = pgTable(
+  "order_import_batches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    source: text("source").notNull().$type<"csv" | "api">(),
+    status: text("status")
+      .notNull()
+      .default("pending")
+      .$type<"pending" | "processed" | "failed">(),
+    fileName: text("file_name"),
+    rowCount: integer("row_count"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [index("order_import_batches_user_idx").on(t.userId)]
+);
+
+export const orderLineItems = pgTable(
+  "order_line_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    batchId: uuid("batch_id").references(() => orderImportBatches.id, {
+      onDelete: "set null",
+    }),
+    orderDate: date("order_date", { mode: "date" }),
+    salesChannel: text("sales_channel").notNull(),
+    marketplaceSku: text("marketplace_sku"),
+    ean: text("ean"),
+    quantity: integer("quantity"),
+    unitPrice: numeric("unit_price", { precision: 14, scale: 4 }),
+    currency: text("currency"),
+    canonicalProductId: uuid("canonical_product_id").references(
+      () => canonicalProducts.id,
+      { onDelete: "set null" }
+    ),
+    rawPayload: jsonb("raw_payload"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("order_line_items_user_date_idx").on(t.userId, t.orderDate),
+    index("order_line_items_canonical_idx").on(t.canonicalProductId),
+    index("order_line_items_batch_idx").on(t.batchId),
+  ]
 );
 
 export const usageEvents = pgTable(

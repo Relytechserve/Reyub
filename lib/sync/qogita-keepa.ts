@@ -7,6 +7,11 @@ import {
   qogitaProducts,
 } from "@/db/schema";
 import {
+  ensureAmazonExternalRef,
+  ensureCanonicalForQogitaProductId,
+  KEEPA_DOMAIN_UK,
+} from "@/lib/catalog/ensure-canonical";
+import {
   extractListingSummary,
   fetchKeepaProductsByProductCodes,
   formatGbpFromKeepaMinor,
@@ -90,13 +95,24 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
   }
 
   const qids = rows.map((r) => r.qogitaId);
-  const dbRows =
+  let dbRows =
     qids.length > 0
       ? await db
           .select()
           .from(qogitaProducts)
           .where(inArray(qogitaProducts.qogitaId, qids))
       : [];
+
+  for (const r of dbRows) {
+    await ensureCanonicalForQogitaProductId(db, r.id);
+  }
+
+  if (qids.length > 0) {
+    dbRows = await db
+      .select()
+      .from(qogitaProducts)
+      .where(inArray(qogitaProducts.qogitaId, qids));
+  }
 
   const eanToQogitaId = new Map<string, string>();
   for (const r of dbRows) {
@@ -157,12 +173,15 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
       .limit(1);
 
     let matchId: string;
+    const canonicalId = qpRow.canonicalProductId;
+
     if (existing[0]) {
       matchId = existing[0].id;
       await db
         .update(productMatches)
         .set({
           qogitaProductId,
+          canonicalProductId: canonicalId,
           confidence: "high",
           reasonTags: ["ean_exact"],
           updatedAt: now,
@@ -173,6 +192,7 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
         .insert(productMatches)
         .values({
           qogitaProductId,
+          canonicalProductId: canonicalId,
           channel: "amazon_uk",
           externalId: summary.asin,
           confidence: "high",
@@ -184,6 +204,13 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
         continue;
       }
       matchId = ins.id;
+    }
+
+    if (canonicalId) {
+      await ensureAmazonExternalRef(db, canonicalId, KEEPA_DOMAIN_UK, summary.asin, {
+        asin: summary.asin,
+        title: summary.title,
+      });
     }
 
     const amazonGbp = formatGbpFromKeepaMinor(summary.buyBoxMinor);
