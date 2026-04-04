@@ -63,7 +63,7 @@ The pipeline **persists both sides in Postgres**, then **matches in the database
 
 Dashboard: **Sync Qogita + Keepa (UK)** runs the same flow. The **Top 20** table reads `keepa_catalog_items` (with Qogita when EAN matches). Optional **margin**: `?margin=1&min=10` or the on-page checkbox.
 
-**Env (required for full pipeline):** `QOGITA_EMAIL` + `QOGITA_PASSWORD` (or `QOGITA_API_TOKEN`), `KEEPA_API_KEY`, and **`KEEPA_BESTSELLER_CATEGORY_IDS`** (comma-separated Amazon browse node IDs — UK examples in `.env.example`). Optional: `KEEPA_DOMAIN` (default UK `2`), `KEEPA_BESTSELLERS_PER_CATEGORY`, `KEEPA_BESTSELLER_RANGE`, `QOGITA_SYNC_MAX_OFFERS`.
+**Env (required for full pipeline):** `QOGITA_EMAIL` + `QOGITA_PASSWORD` (or `QOGITA_API_TOKEN`), `KEEPA_API_KEY`, and **`KEEPA_BESTSELLER_CATEGORY_IDS`** (comma-separated Amazon browse node IDs — e.g. UK **Fragrances** `118457031`, see `.env.example`). Optional: `KEEPA_DOMAIN` (default UK `2`), `KEEPA_BESTSELLERS_PER_CATEGORY`, `KEEPA_BESTSELLER_RANGE`, **`KEEPA_PRODUCT_INCLUDE_HISTORY`** / **`KEEPA_HISTORY_DAYS`** (store Keepa `csv` / rank time series in `keepa_catalog_items.metrics.keepaTimeseries`), `QOGITA_SYNC_MAX_OFFERS`, **`QOGITA_OFFERS_PATH`** (e.g. category filter for fragrance offers if supported by the Buyer API).
 
 **CLI:** `npm run sync:pipeline` loads `.env.local` and runs one full sync (same as dashboard/cron).
 

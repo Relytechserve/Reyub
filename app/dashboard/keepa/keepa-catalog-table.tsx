@@ -54,6 +54,9 @@ export function KeepaCatalogTable({
               Qogita
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              30d series
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
               Captured
             </th>
           </tr>
@@ -108,6 +111,18 @@ export function KeepaCatalogTable({
                   </span>
                 ) : (
                   <span className="text-zinc-500">—</span>
+                )}
+              </td>
+              <td className="whitespace-nowrap px-3 py-2 text-xs">
+                {m.hasKeepaTimeseries ? (
+                  <span
+                    className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200"
+                    title="Stored in metrics.keepaTimeseries (Keepa csv / salesRanks, etc.)"
+                  >
+                    Yes
+                  </span>
+                ) : (
+                  <span className="text-zinc-400">—</span>
                 )}
               </td>
               <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-500">

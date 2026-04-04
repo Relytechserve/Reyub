@@ -24,6 +24,7 @@ import {
   extractListingSummary,
   fetchKeepaProductsByAsins,
   formatGbpFromKeepaMinor,
+  pickKeepaTimeseriesFields,
 } from "@/lib/keepa/product";
 import { keepaEansFromProduct } from "@/lib/keepa/utils";
 import {
@@ -125,6 +126,12 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
   const perCategory = Math.min(
     100,
     Math.max(1, Number(process.env.KEEPA_BESTSELLERS_PER_CATEGORY ?? "50") || 50)
+  );
+  const keepaIncludeHistory =
+    process.env.KEEPA_PRODUCT_INCLUDE_HISTORY?.trim() !== "0";
+  const keepaHistoryDays = Math.min(
+    90,
+    Math.max(1, Number(process.env.KEEPA_HISTORY_DAYS ?? "30") || 30)
   );
 
   const finalizeStats = (): SyncRunDiagnosticsStats => ({
@@ -273,6 +280,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
           const products = await fetchKeepaProductsByAsins(asinList, keepaKey, {
             domain,
             statsDays: 30,
+            includeHistory: keepaIncludeHistory,
+            historyDays: keepaIncludeHistory ? keepaHistoryDays : undefined,
           });
           keepaProductsFetched = products.length;
           const now = new Date();
@@ -289,6 +298,7 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             const amazonGbp = formatGbpFromKeepaMinor(summary.buyBoxMinor);
             const avg30Gbp = formatGbpFromKeepaMinor(summary.avg30BuyBoxMinor);
 
+            const ts = keepaIncludeHistory ? pickKeepaTimeseriesFields(kp) : {};
             const metrics = {
               amazonAsin: summary.asin,
               amazonTitle: summary.title,
@@ -299,6 +309,14 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
               salesRank: summary.salesRank,
               salesRankDrops30: summary.salesRankDrops30,
               keepaStats: summary.statsSnippet,
+              ...(keepaIncludeHistory && Object.keys(ts).length > 0
+                ? {
+                    keepaTimeseries: {
+                      days: keepaHistoryDays,
+                      ...ts,
+                    },
+                  }
+                : {}),
             };
 
             await db

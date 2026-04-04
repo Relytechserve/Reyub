@@ -46,6 +46,8 @@ export type KeepaCatalogBrowseRow = KeepaDashboardRow & {
   bestsellerRank: number | null;
   /** EAN stored on the Keepa row (before Qogita join). */
   keepaPrimaryEan: string | null;
+  /** True when `metrics.keepaTimeseries` was stored (30d Keepa arrays). */
+  hasKeepaTimeseries: boolean;
 };
 
 function metricsVelocity(m: Record<string, unknown>): number {
@@ -178,6 +180,7 @@ export async function listKeepaCatalogPage(
   const mapped: KeepaCatalogBrowseRow[] = rows.map((row) => {
     const met = row.k.metrics as Record<string, unknown>;
     const hasQogita = Boolean(row.qogitaQid);
+    const hasKeepaTimeseries = Boolean(met?.keepaTimeseries);
     return {
       matchId: row.k.id,
       asin: row.k.asin,
@@ -203,6 +206,7 @@ export async function listKeepaCatalogPage(
       browseNodeId: row.k.browseNodeId,
       bestsellerRank: row.k.bestsellerRank,
       keepaPrimaryEan: row.k.primaryEan,
+      hasKeepaTimeseries,
     };
   });
 

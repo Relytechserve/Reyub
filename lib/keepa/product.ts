@@ -15,14 +15,28 @@ export type KeepaProductResponse = {
   error?: { message?: string; type?: string };
 };
 
+export type FetchKeepaProductsByAsinsOptions = {
+  domain?: number;
+  statsDays?: number;
+  /**
+   * Include Keepa `csv` / rank history (higher token use). Maps to `history=1`.
+   * @see https://keepa.com/#!discuss/t/request-products/110
+   */
+  includeHistory?: boolean;
+  /** Limit history to last N days (`days` query param). Only when includeHistory. */
+  historyDays?: number;
+};
+
 /** Batch ASIN lookup (max 100 per request). ASINs are 10-char alphanumeric. */
 export async function fetchKeepaProductsByAsins(
   asins: string[],
   apiKey: string,
-  options: { domain?: number; statsDays?: number } = {}
+  options: FetchKeepaProductsByAsinsOptions = {}
 ): Promise<KeepaProduct[]> {
   const domain = options.domain ?? KEEPA_DOMAIN_UK;
   const statsDays = options.statsDays ?? 30;
+  const includeHistory = options.includeHistory ?? false;
+  const historyDays = options.historyDays;
   const cleaned = [
     ...new Set(
       asins
@@ -38,7 +52,9 @@ export async function fetchKeepaProductsByAsins(
       chunk,
       apiKey,
       domain,
-      statsDays
+      statsDays,
+      includeHistory,
+      historyDays
     );
     out.push(...batch);
   }
@@ -51,7 +67,9 @@ async function fetchProductsChunkOrSingles(
   chunk: string[],
   apiKey: string,
   domain: number,
-  statsDays: number
+  statsDays: number,
+  includeHistory: boolean,
+  historyDays: number | undefined
 ): Promise<KeepaProduct[]> {
   /** Keepa: use `asin` for ASINs; `code` is for UPC/EAN/ISBN only. */
   const tryOnce = async (asins: string[]): Promise<KeepaProduct[]> => {
@@ -59,9 +77,12 @@ async function fetchProductsChunkOrSingles(
       key: apiKey,
       domain: String(domain),
       asin: asins.join(","),
-      history: "0",
+      history: includeHistory ? "1" : "0",
       stats: String(statsDays),
     });
+    if (includeHistory && historyDays != null && historyDays > 0) {
+      params.set("days", String(historyDays));
+    }
     const res = await fetch(`${KEEPA_BASE}/product?${params}`);
     const json = (await res.json()) as KeepaProductResponse;
     if (json.error?.message) {
@@ -84,13 +105,39 @@ async function fetchProductsChunkOrSingles(
     const merged: KeepaProduct[] = [];
     for (const asin of chunk) {
       try {
-        merged.push(...(await tryOnce([asin])));
+        merged.push(
+          ...(await tryOnce([asin]))
+        );
       } catch {
         // skip invalid or unsupported ASIN for this domain
       }
     }
     return merged;
   }
+}
+
+/**
+ * Raw Keepa time-series fields for ~30d charts (format is Keepa-compressed arrays).
+ * Omit heavy keys from API responses when not needed to save DB size.
+ */
+export function pickKeepaTimeseriesFields(p: KeepaProduct): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (p.csv != null) {
+    out.csv = p.csv;
+  }
+  if (p.salesRanks != null) {
+    out.salesRanks = p.salesRanks;
+  }
+  if (p.salesRankReferenceHistory != null) {
+    out.salesRankReferenceHistory = p.salesRankReferenceHistory;
+  }
+  if (p.monthlySoldHistory != null) {
+    out.monthlySoldHistory = p.monthlySoldHistory;
+  }
+  if (p.buyBoxSellerIdHistory != null) {
+    out.buyBoxSellerIdHistory = p.buyBoxSellerIdHistory;
+  }
+  return out;
 }
 
 /** Batch EAN/UPC lookup (max 100 codes per request). */
