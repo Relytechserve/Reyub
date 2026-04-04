@@ -15,6 +15,84 @@ export type KeepaProductResponse = {
   error?: { message?: string; type?: string };
 };
 
+/** Batch ASIN lookup (max 100 per request). ASINs are 10-char alphanumeric. */
+export async function fetchKeepaProductsByAsins(
+  asins: string[],
+  apiKey: string,
+  options: { domain?: number; statsDays?: number } = {}
+): Promise<KeepaProduct[]> {
+  const domain = options.domain ?? KEEPA_DOMAIN_UK;
+  const statsDays = options.statsDays ?? 30;
+  const cleaned = [
+    ...new Set(
+      asins
+        .map((a) => a.trim().toUpperCase())
+        .filter((a) => /^[A-Z0-9]{10}$/.test(a))
+    ),
+  ];
+  const out: KeepaProduct[] = [];
+
+  for (let i = 0; i < cleaned.length; i += 100) {
+    const chunk = cleaned.slice(i, i + 100);
+    const batch = await fetchProductsChunkOrSingles(
+      chunk,
+      apiKey,
+      domain,
+      statsDays
+    );
+    out.push(...batch);
+  }
+
+  return out;
+}
+
+/** One Keepa product request; on batch error, retry ASINs individually so one bad code does not fail the run. */
+async function fetchProductsChunkOrSingles(
+  chunk: string[],
+  apiKey: string,
+  domain: number,
+  statsDays: number
+): Promise<KeepaProduct[]> {
+  /** Keepa: use `asin` for ASINs; `code` is for UPC/EAN/ISBN only. */
+  const tryOnce = async (asins: string[]): Promise<KeepaProduct[]> => {
+    const params = new URLSearchParams({
+      key: apiKey,
+      domain: String(domain),
+      asin: asins.join(","),
+      history: "0",
+      stats: String(statsDays),
+    });
+    const res = await fetch(`${KEEPA_BASE}/product?${params}`);
+    const json = (await res.json()) as KeepaProductResponse;
+    if (json.error?.message) {
+      throw new Error(
+        `Keepa: ${json.error.message}${json.error.type ? ` (${json.error.type})` : ""}`
+      );
+    }
+    if (!res.ok) {
+      throw new Error(`Keepa HTTP ${res.status}`);
+    }
+    return json.products ?? [];
+  };
+
+  try {
+    return await tryOnce(chunk);
+  } catch {
+    if (chunk.length <= 1) {
+      return [];
+    }
+    const merged: KeepaProduct[] = [];
+    for (const asin of chunk) {
+      try {
+        merged.push(...(await tryOnce([asin])));
+      } catch {
+        // skip invalid or unsupported ASIN for this domain
+      }
+    }
+    return merged;
+  }
+}
+
 /** Batch EAN/UPC lookup (max 100 codes per request). */
 export async function fetchKeepaProductsByProductCodes(
   codes: string[],

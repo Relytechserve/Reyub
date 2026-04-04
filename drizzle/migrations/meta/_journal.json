@@ -22,6 +22,13 @@
       "when": 1775219676278,
       "tag": "0002_pretty_stryfe",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775330947835,
+      "tag": "0003_silent_rocket_racer",
+      "breakpoints": true
     }
   ]
 }

@@ -233,6 +233,31 @@ export const productCategoryLinks = pgTable(
   ]
 );
 
+/**
+ * Amazon demand data from Keepa (bestseller discovery → product stats).
+ * Stored independently; Qogita is matched later by `primary_ean` ↔ `qogita_products.ean`.
+ */
+export const keepaCatalogItems = pgTable(
+  "keepa_catalog_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    asin: text("asin").notNull(),
+    domainId: integer("domain_id").notNull().default(2),
+    browseNodeId: text("browse_node_id"),
+    bestsellerRank: integer("bestseller_rank"),
+    title: text("title").notNull(),
+    primaryEan: text("primary_ean"),
+    metrics: jsonb("metrics").notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("keepa_catalog_asin_domain_uidx").on(t.asin, t.domainId),
+    index("keepa_catalog_primary_ean_idx").on(t.primaryEan),
+    index("keepa_catalog_captured_idx").on(t.capturedAt),
+  ]
+);
+
 export const qogitaProducts = pgTable(
   "qogita_products",
   {

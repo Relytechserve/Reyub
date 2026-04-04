@@ -1,4 +1,4 @@
-import type { SyncRunDiagnosticsStats } from "@/lib/sync/qogita-keepa";
+import type { SyncRunDiagnosticsStats } from "@/lib/sync/types";
 
 type SyncRunRow = {
   id: string;

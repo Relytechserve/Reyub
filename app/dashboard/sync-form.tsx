@@ -30,8 +30,9 @@ export function SyncQogitaKeepaForm() {
       <form action={formAction} className="flex flex-wrap items-center gap-3">
         <SubmitButton />
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Fetches offers from Qogita, saves to DB, matches EANs on Amazon UK via
-          Keepa.
+          Runs the full pipeline: Keepa bestseller ASINs → DB, Qogita offers → DB,
+          then EAN match. Requires{" "}
+          <code className="text-xs">KEEPA_BESTSELLER_CATEGORY_IDS</code>.
         </p>
       </form>
       {state ? (

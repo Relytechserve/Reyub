@@ -1,6 +1,7 @@
 import { auth, signOut } from "@/auth";
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { Suspense } from "react";
 
 import { getDb } from "@/db";
@@ -115,9 +116,17 @@ export default async function DashboardPage({
         <p className="text-sm font-medium uppercase tracking-wide text-zinc-500">
           Reyub
         </p>
-        <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Dashboard
-        </h1>
+        <div className="flex flex-wrap items-center gap-4">
+          <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            Dashboard
+          </h1>
+          <Link
+            href="/dashboard/keepa"
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            View Keepa data
+          </Link>
+        </div>
         <p className="text-zinc-600 dark:text-zinc-400">
           Signed in as{" "}
           <span className="font-medium text-zinc-900 dark:text-zinc-100">
@@ -145,15 +154,17 @@ export default async function DashboardPage({
           Sync data
         </h2>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-          Pull Qogita offers, call Keepa for every offer EAN, and store{" "}
-          <strong>all</strong> Amazon UK listings Keepa returns (with or without a
-          Qogita match). Top 20 below rank by recent sales velocity (30-day rank
-          drops), then sales rank.
+          <strong>1)</strong> Keepa bestseller discovery (browse nodes you configure) →
+          store Amazon demand in <code className="text-xs">keepa_catalog_items</code>.
+          <strong> 2)</strong> Qogita offers → <code className="text-xs">qogita_products</code>.
+          <strong> 3)</strong> Match in the database by EAN. Set{" "}
+          <code className="text-xs">KEEPA_BESTSELLER_CATEGORY_IDS</code> in{" "}
+          <code className="text-xs">.env.local</code>.
         </p>
         <div className="mt-6">
           <SyncQogitaKeepaForm />
         </div>
-        <div className="mt-6 grid gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-6 grid gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 sm:grid-cols-2 lg:grid-cols-5">
           <div>
             <span className="text-zinc-500">Qogita rows in DB</span>
             <p className="font-mono text-lg">{summary.qogitaOffersInDb}</p>
@@ -163,14 +174,36 @@ export default async function DashboardPage({
             <p className="font-mono text-lg">{summary.withEan}</p>
           </div>
           <div>
-            <span className="text-zinc-500">Amazon UK ASINs</span>
+            <span className="text-zinc-500">Keepa catalog rows</span>
+            <p className="font-mono text-lg">{summary.keepaCatalogRows}</p>
+          </div>
+          <div>
+            <span className="text-zinc-500">Matched ASINs (Qogita)</span>
             <p className="font-mono text-lg">{summary.amazonUkMatches}</p>
           </div>
           <div>
-            <span className="text-zinc-500">With Keepa snapshot</span>
+            <span className="text-zinc-500">Keepa match snapshots</span>
             <p className="font-mono text-lg">{summary.withKeepaSnapshot}</p>
           </div>
         </div>
+        {summary.qogitaOffersInDb === 0 ? (
+          <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50/90 p-4 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100/90">
+            <strong className="font-semibold">No Qogita rows in the database.</strong>{" "}
+            The Buyer API call to <code className="text-xs">GET /offers/</code> is
+            returning an empty <code className="text-xs">results</code> list for
+            your account (HTTP 200, zero offers). That is an API/catalog issue,
+            not a failed login — you need offers visible to this endpoint (check
+            Qogita account access, buyer programme, or whether another route is
+            required). Keepa data can still sync independently; see{" "}
+            <Link
+              href="/dashboard/keepa"
+              className="font-medium underline underline-offset-2"
+            >
+              Keepa catalog
+            </Link>
+            .
+          </p>
+        ) : null}
         {summary.withEan === 0 && summary.qogitaOffersInDb > 0 ? (
           <p className="mt-4 text-sm text-amber-800 dark:text-amber-200">
             Your Qogita offers have no barcodes in the fields we read — the table

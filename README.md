@@ -55,12 +55,21 @@ Sourcing insights for sellers buying on **Qogita** and reselling on **Amazon** (
 
 ### Qogita + Keepa sync
 
-- Dashboard: **Sync Qogita + Keepa (UK)** pulls `GET /offers/`, upserts `qogita_products`, then batches EANs to [Keepa Product](https://keepa.com/#!discuss/t/request-products/110) (`domain=2`, `stats=30`, `history=0`). **Every** ASIN Keepa returns is stored (with a price snapshot); Qogita is linked when the same GTIN appears on an offer.
-- The dashboard **Top 20** table ranks listings by 30-day sales-rank drops (velocity), then BSR. Optional **margin** column: `?margin=1&min=10` or the on-page checkbox.
-- Env: `QOGITA_EMAIL`, `QOGITA_PASSWORD`, `KEEPA_API_KEY`, optional `QOGITA_SYNC_MAX_OFFERS` (default `100`).
-- Cron: `GET /api/cron/sync` runs the same sync (optional `CRON_SECRET`).
-- Apply migration `0002_*` (or `npm run db:push`) so `product_matches.qogita_product_id` can be null for Amazon-only rows.
-- After each sync, the dashboard **Pipeline diagnostics** section reads `sync_runs` and shows how many Qogita offers were pulled, how many had EANs, whether Keepa was called, and how many ASIN snapshots were saved (so you can tell if the problem is mapping, EANs, or Keepa).
+The pipeline **persists both sides in Postgres**, then **matches in the database** on EAN/GTIN:
+
+1. **Qogita** — `GET /offers/` (or `QOGITA_OFFERS_PATH`) → upserts **`qogita_products`** and canonical refs.
+2. **Keepa** — [bestsellers](https://keepa.com/#!api) for each browse node in **`KEEPA_BESTSELLER_CATEGORY_IDS`**, then [product](https://keepa.com/#!discuss/t/request-products/110) for those ASINs → upserts **`keepa_catalog_items`** (Amazon demand signal).
+3. **Match** — rows in **`keepa_catalog_items`** with `primary_ean` are joined to **`qogita_products.ean`**; matches update **`product_matches`** and append **`price_snapshots`**.
+
+Dashboard: **Sync Qogita + Keepa (UK)** runs the same flow. The **Top 20** table reads `keepa_catalog_items` (with Qogita when EAN matches). Optional **margin**: `?margin=1&min=10` or the on-page checkbox.
+
+**Env (required for full pipeline):** `QOGITA_EMAIL` + `QOGITA_PASSWORD` (or `QOGITA_API_TOKEN`), `KEEPA_API_KEY`, and **`KEEPA_BESTSELLER_CATEGORY_IDS`** (comma-separated Amazon browse node IDs — UK examples in `.env.example`). Optional: `KEEPA_DOMAIN` (default UK `2`), `KEEPA_BESTSELLERS_PER_CATEGORY`, `KEEPA_BESTSELLER_RANGE`, `QOGITA_SYNC_MAX_OFFERS`.
+
+**CLI:** `npm run sync:pipeline` loads `.env.local` and runs one full sync (same as dashboard/cron).
+
+- Cron: `GET /api/cron/sync` (optional `CRON_SECRET`).
+- Schema: `npm run db:push` (or migrations under `drizzle/migrations/`, including **`keepa_catalog_items`**).
+- **Pipeline diagnostics** on the dashboard reads **`sync_runs`** (offers pulled, Keepa rows saved, errors).
 
 ### Qogita API token
 

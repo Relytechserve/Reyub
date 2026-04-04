@@ -11,7 +11,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "qogita:auth": "tsx scripts/test-qogita-auth.ts"
+    "qogita:auth": "tsx scripts/test-qogita-auth.ts",
+    "sync:pipeline": "tsx scripts/run-pipeline-sync.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.1",
