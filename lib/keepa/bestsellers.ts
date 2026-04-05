@@ -42,14 +42,23 @@ export async function fetchBestsellerAsins(
     categoryId: string;
     /** Averaging range for rank history (Keepa: 0, 1, 30, 90, 180). */
     range?: number;
+    /** Max ASINs to request (Keepa caps at 100 per category). */
+    count?: number;
   }
 ): Promise<string[]> {
+  const countRaw =
+    options.count != null
+      ? Math.min(100, Math.max(1, Math.trunc(options.count)))
+      : undefined;
   const params = new URLSearchParams({
     key: apiKey,
     domain: String(options.domain),
     category: options.categoryId.replace(/\D/g, "") || options.categoryId,
     range: String(options.range ?? 30),
   });
+  if (countRaw != null) {
+    params.set("count", String(countRaw));
+  }
 
   const res = await fetch(`${KEEPA_BASE}/bestsellers?${params}`);
   const json = (await res.json()) as BestsellersResponse;

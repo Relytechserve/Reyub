@@ -20,6 +20,7 @@ import {
   KEEPA_DOMAIN_UK,
 } from "@/lib/catalog/ensure-canonical";
 import { fetchBestsellerAsins } from "@/lib/keepa/bestsellers";
+import { expandRootsToBestsellerCategoryIds } from "@/lib/keepa/category";
 import {
   extractListingSummary,
   fetchKeepaProductsByAsins,
@@ -34,6 +35,11 @@ import {
 } from "@/lib/qogita/offers";
 
 import type { SyncRunDiagnosticsStats } from "@/lib/sync/types";
+
+function envTruthy(raw: string | undefined): boolean {
+  const v = raw?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
 
 export type FullPipelineResult = {
   offersFetched: number;
@@ -123,9 +129,30 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     process.env.KEEPA_BESTSELLER_CATEGORY_IDS?.split(",")
       .map((s) => s.trim())
       .filter(Boolean) ?? [];
+  /** Keepa bestseller API allows at most 100 ASINs per category request. */
   const perCategory = Math.min(
     100,
-    Math.max(1, Number(process.env.KEEPA_BESTSELLERS_PER_CATEGORY ?? "50") || 50)
+    Math.max(
+      1,
+      Number(process.env.KEEPA_BESTSELLERS_PER_CATEGORY ?? "50") || 50
+    )
+  );
+  const keepaExpandChildren = envTruthy(
+    process.env.KEEPA_BESTSELLER_EXPAND_CHILDREN
+  );
+  const keepaMaxBestsellerCategories = Math.min(
+    500,
+    Math.max(
+      1,
+      Number(process.env.KEEPA_BESTSELLER_MAX_CATEGORIES ?? "30") || 30
+    )
+  );
+  const keepaTargetUniqueAsins = Math.min(
+    500_000,
+    Math.max(
+      1,
+      Number(process.env.KEEPA_BESTSELLER_TARGET_ASINS ?? "2000") || 2000
+    )
   );
   const keepaIncludeHistory =
     process.env.KEEPA_PRODUCT_INCLUDE_HISTORY?.trim() !== "0";
@@ -133,6 +160,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     90,
     Math.max(1, Number(process.env.KEEPA_HISTORY_DAYS ?? "30") || 30)
   );
+
+  let keepaCategoryIdsForStats = categoryIds;
 
   const finalizeStats = (): SyncRunDiagnosticsStats => ({
     offersFetched,
@@ -148,8 +177,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     qogitaOffersPath: qogitaOffersEntryPath(),
     categoryFilterApplied: categoryIds.length > 0,
     categoryNote:
-      categoryIds.length > 0
-        ? `Keepa bestsellers pulled for browse nodes: ${categoryIds.join(", ")}. Qogita GET offers path is separate — match happens in DB by EAN.`
+      keepaCategoryIdsForStats.length > 0
+        ? `Keepa bestsellers for ${keepaCategoryIdsForStats.length} browse node(s)${keepaExpandChildren ? " (subcategories expanded from KEEPA_BESTSELLER_CATEGORY_IDS)" : ""}: ${keepaCategoryIdsForStats.slice(0, 24).join(", ")}${keepaCategoryIdsForStats.length > 24 ? "…" : ""}. Qogita GET offers path is separate — match happens in DB by EAN.`
         : "Set KEEPA_BESTSELLER_CATEGORY_IDS to Amazon browse node IDs for bestseller discovery.",
   });
 
@@ -244,20 +273,54 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
         "KEEPA_BESTSELLER_CATEGORY_IDS is empty — set one or more Amazon browse node IDs (UK examples in README) to pull top sellers."
       );
     } else {
-      const allAsins: { asin: string; browseNodeId: string; rank: number }[] =
-        [];
+      let resolvedCategoryIds = [...categoryIds].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true })
+      );
+      if (keepaExpandChildren) {
+        resolvedCategoryIds = await expandRootsToBestsellerCategoryIds(
+          keepaKey,
+          domain,
+          categoryIds,
+          (msg) => {
+            errors.push(msg);
+          }
+        );
+      }
+      keepaCategoryIdsForStats = resolvedCategoryIds;
 
-      for (const catId of categoryIds) {
+      const bestsellerRange =
+        Number(process.env.KEEPA_BESTSELLER_RANGE ?? "30") || 30;
+      const uniqueKeys = new Map<
+        string,
+        { asin: string; browseNodeId: string; rank: number }
+      >();
+      let categoriesUsed = 0;
+
+      for (const catId of resolvedCategoryIds) {
+        if (categoriesUsed >= keepaMaxBestsellerCategories) {
+          break;
+        }
+        if (uniqueKeys.size >= keepaTargetUniqueAsins) {
+          break;
+        }
         try {
           const asins = await fetchBestsellerAsins(keepaKey, {
             domain,
             categoryId: catId,
-            range: Number(process.env.KEEPA_BESTSELLER_RANGE ?? "30") || 30,
+            range: bestsellerRange,
+            count: perCategory,
           });
+          categoriesUsed += 1;
           const slice = asins.slice(0, perCategory);
           keepaBestsellerAsinsDiscovered += slice.length;
           slice.forEach((asin, idx) => {
-            allAsins.push({ asin, browseNodeId: catId, rank: idx + 1 });
+            if (!uniqueKeys.has(asin)) {
+              uniqueKeys.set(asin, {
+                asin,
+                browseNodeId: catId,
+                rank: idx + 1,
+              });
+            }
           });
         } catch (e) {
           errors.push(
@@ -266,12 +329,6 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
         }
       }
 
-      const uniqueKeys = new Map<string, { asin: string; browseNodeId: string; rank: number }>();
-      for (const x of allAsins) {
-        if (!uniqueKeys.has(x.asin)) {
-          uniqueKeys.set(x.asin, x);
-        }
-      }
       const deduped = [...uniqueKeys.values()];
       const asinList = deduped.map((d) => d.asin);
 

@@ -17,8 +17,13 @@ export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
   const collected: unknown[] = [];
   let path = qogitaOffersEntryPath();
   let page = 1;
+  /** Enough pages for large syncs (e.g. 2000 offers at ~20/page ≈ 100 requests). */
+  const maxPages = Math.min(
+    500,
+    Math.max(25, Math.ceil(maxOffers / 20))
+  );
 
-  for (let i = 0; i < 25 && collected.length < maxOffers; i++) {
+  for (let i = 0; i < maxPages && collected.length < maxOffers; i++) {
     const res = await qogitaFetch(path);
     const text = await res.text();
     if (!res.ok) {
