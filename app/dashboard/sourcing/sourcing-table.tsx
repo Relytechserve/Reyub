@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { SourcingOpportunityRow } from "@/lib/sourcing/opportunities";
 
 type Row = SourcingOpportunityRow & {
@@ -5,6 +6,8 @@ type Row = SourcingOpportunityRow & {
   estimatedProfitGbpPerUnit: number | null;
   capitalRequiredGbp: number | null;
   estimatedProfitPerLineGbp: number | null;
+  movMarginPct: number | null;
+  potential: "High" | "Medium" | "Low";
 };
 
 function showGbpIncShippingNote(
@@ -30,10 +33,42 @@ function matchMethodLabel(tags: string[]): string {
 export function SourcingTable({
   rows,
   upsertMatchDecisionAction,
+  sortBy,
+  searchState,
 }: {
   rows: Row[];
   upsertMatchDecisionAction: (formData: FormData) => Promise<void>;
+  sortBy: string;
+  searchState: Record<string, string>;
 }) {
+  const sortHref = (nextSort: string) => {
+    const params = new URLSearchParams(searchState);
+    params.set("sort", nextSort);
+    return `/dashboard/sourcing?${params.toString()}`;
+  };
+
+  const sortableHeader = (
+    label: string,
+    key: string,
+    title: string
+  ) => {
+    const active = sortBy === key;
+    return (
+      <Link
+        href={sortHref(key)}
+        title={title}
+        className={
+          active
+            ? "inline-flex items-center gap-1 rounded bg-zinc-200 px-2 py-1 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-50"
+            : "inline-flex items-center gap-1 rounded px-2 py-1 text-zinc-700 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        }
+      >
+        <span>{label}</span>
+        <span className="text-[10px]">{active ? "▼" : "↕"}</span>
+      </Link>
+    );
+  };
+
   if (rows.length === 0) {
     return (
       <div className="mt-4 space-y-3 rounded-xl border border-zinc-200 bg-zinc-50 p-6 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-300">
@@ -67,22 +102,52 @@ export function SourcingTable({
               Demand
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              Units/Pack
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
               Qogita buy
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Est. margin
+              {sortableHeader(
+                "Est. margin",
+                "margin_desc",
+                "Sort by estimated margin percentage (descending)"
+              )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Est. profit / unit
+              {sortableHeader(
+                "Est. profit / unit",
+                "profit_unit_desc",
+                "Sort by profit per unit (descending)"
+              )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Capital required (£)
+              {sortableHeader(
+                "Capital required (£)",
+                "capital_asc",
+                "Sort by lowest capital required first"
+              )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Profit per line (£)
+              {sortableHeader(
+                "Profit per line (£)",
+                "profit_line_desc",
+                "Sort by profit per line (descending)"
+              )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Match
+              {sortableHeader(
+                "MoV margin",
+                "mov_margin_desc",
+                "Sort by margin versus minimum order value (descending)"
+              )}
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              {sortableHeader(
+                "Match / Potential",
+                "potential_desc",
+                "Sort by sales potential recommendation"
+              )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
               Review
@@ -128,6 +193,23 @@ export function SourcingTable({
                 <div className="text-xs">
                   Drops 30d {m.salesRankDrops30?.toLocaleString() ?? "—"}
                 </div>
+                <div className="mt-1">
+                  <span
+                    className={
+                      m.potential === "High"
+                        ? "inline-block rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100"
+                        : m.potential === "Medium"
+                          ? "inline-block rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                          : "inline-block rounded bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                    }
+                    title="Potential is inferred from 30d sales-rank drops + current BSR."
+                  >
+                    {m.potential} potential
+                  </span>
+                </div>
+              </td>
+              <td className="px-3 py-2 text-zinc-700 dark:text-zinc-300">
+                {m.unitsPerPack != null ? m.unitsPerPack : 1}
               </td>
               <td className="max-w-[220px] px-3 py-2">
                 <div
@@ -193,14 +275,37 @@ export function SourcingTable({
               </td>
               <td className="whitespace-nowrap px-3 py-2 text-zinc-800 dark:text-zinc-200">
                 {m.estimatedProfitPerLineGbp != null ? (
+                  <div>
+                    <span
+                      className={
+                        m.estimatedProfitPerLineGbp >= 0
+                          ? "text-emerald-800 dark:text-emerald-300"
+                          : "text-red-700 dark:text-red-300"
+                      }
+                    >
+                      £{m.estimatedProfitPerLineGbp.toFixed(2)}
+                    </span>
+                    <p className="text-[10px] text-zinc-500">
+                      £{(m.estimatedProfitGbpPerUnit ?? 0).toFixed(2)} × {m.unitsPerPack ?? 1}
+                    </p>
+                  </div>
+                ) : (
+                  <span className="text-zinc-400">—</span>
+                )}
+              </td>
+              <td className="whitespace-nowrap px-3 py-2 text-zinc-800 dark:text-zinc-200">
+                {m.movMarginPct != null ? (
                   <span
                     className={
-                      m.estimatedProfitPerLineGbp >= 0
+                      m.movMarginPct >= 5
                         ? "text-emerald-800 dark:text-emerald-300"
-                        : "text-red-700 dark:text-red-300"
+                        : m.movMarginPct >= 0
+                          ? "text-amber-800 dark:text-amber-200"
+                          : "text-red-700 dark:text-red-300"
                     }
+                    title="Profit per line as a % of min order value override (MoV), when provided."
                   >
-                    £{m.estimatedProfitPerLineGbp.toFixed(2)}
+                    {m.movMarginPct.toFixed(2)}%
                   </span>
                 ) : (
                   <span className="text-zinc-400">—</span>
