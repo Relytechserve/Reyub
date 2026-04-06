@@ -1,4 +1,4 @@
-import { desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -15,6 +15,13 @@ import {
 } from "@/lib/sync/pipeline";
 
 export type { QogitaKeepaSyncResult } from "@/lib/sync/pipeline";
+
+function qogitaFlagsPriceIncShipping(flags: unknown): boolean {
+  if (!flags || typeof flags !== "object") {
+    return false;
+  }
+  return (flags as Record<string, unknown>).priceIncShipping === true;
+}
 export type { SyncRunDiagnosticsStats } from "@/lib/sync/types";
 
 /** @deprecated name — runs Keepa-first pipeline + Qogita catalog + DB match. */
@@ -23,6 +30,7 @@ export async function runQogitaKeepaSync(): Promise<QogitaKeepaSyncResult> {
 }
 
 export type KeepaDashboardRow = {
+  /** `keepa_catalog_items.id` (stable row key for tables). */
   matchId: string;
   asin: string;
   amazonTitle: string | null;
@@ -38,6 +46,10 @@ export type KeepaDashboardRow = {
   buyUnitPrice: string | null;
   currency: string | null;
   stockUnits: number | null;
+  /** Excel catalog row: list price includes shipping (GBP). */
+  priceIncShipping: boolean;
+  /** From `product_matches.reason_tags` when joined. */
+  matchReasonTags: string[];
 };
 
 /** Keepa catalog browse page: adds Amazon browse node + bestseller rank from DB. */
@@ -82,17 +94,27 @@ export async function listTopKeepaDashboardRows(
   const rows = await db
     .select({
       k: keepaCatalogItems,
+      pmConfidence: productMatches.confidence,
+      pmReasonTags: productMatches.reasonTags,
       qogitaQid: qogitaProducts.qogitaId,
       qogitaTitle: qogitaProducts.title,
       buyUnitPrice: qogitaProducts.buyUnitPrice,
       currency: qogitaProducts.currency,
       stockUnits: qogitaProducts.stockUnits,
       qpEan: qogitaProducts.ean,
+      qpFlags: qogitaProducts.flags,
     })
     .from(keepaCatalogItems)
     .leftJoin(
+      productMatches,
+      and(
+        eq(productMatches.externalId, keepaCatalogItems.asin),
+        eq(productMatches.channel, "amazon_uk")
+      )
+    )
+    .leftJoin(
       qogitaProducts,
-      eq(keepaCatalogItems.primaryEan, qogitaProducts.ean)
+      eq(qogitaProducts.id, productMatches.qogitaProductId)
     )
     .orderBy(desc(keepaCatalogItems.capturedAt))
     .limit(500);
@@ -105,6 +127,10 @@ export async function listTopKeepaDashboardRows(
   const mapped = rows.map((row) => {
     const met = row.k.metrics as Record<string, unknown>;
     const hasQogita = Boolean(row.qogitaQid);
+    const tags = row.pmReasonTags;
+    const matchReasonTags = Array.isArray(tags)
+      ? tags.filter((t): t is string => typeof t === "string")
+      : [];
     return {
       matchId: row.k.id,
       asin: row.k.asin,
@@ -120,13 +146,19 @@ export async function listTopKeepaDashboardRows(
           ? met.salesRankDrops30
           : null,
       capturedAt: row.k.capturedAt,
-      confidence: hasQogita ? ("high" as const) : ("medium" as const),
+      confidence: hasQogita
+        ? row.pmConfidence === "high" || row.pmConfidence === "medium"
+          ? row.pmConfidence
+          : ("high" as const)
+        : ("medium" as const),
       qogitaId: row.qogitaQid ?? null,
       qogitaTitle: row.qogitaTitle ?? null,
       ean: row.qpEan ?? row.k.primaryEan ?? null,
       buyUnitPrice: row.buyUnitPrice,
       currency: row.currency ?? "EUR",
       stockUnits: row.stockUnits,
+      priceIncShipping: qogitaFlagsPriceIncShipping(row.qpFlags),
+      matchReasonTags,
     };
   });
 
@@ -161,17 +193,27 @@ export async function listKeepaCatalogPage(
   const rows = await db
     .select({
       k: keepaCatalogItems,
+      pmConfidence: productMatches.confidence,
+      pmReasonTags: productMatches.reasonTags,
       qogitaQid: qogitaProducts.qogitaId,
       qogitaTitle: qogitaProducts.title,
       buyUnitPrice: qogitaProducts.buyUnitPrice,
       currency: qogitaProducts.currency,
       stockUnits: qogitaProducts.stockUnits,
       qpEan: qogitaProducts.ean,
+      qpFlags: qogitaProducts.flags,
     })
     .from(keepaCatalogItems)
     .leftJoin(
+      productMatches,
+      and(
+        eq(productMatches.externalId, keepaCatalogItems.asin),
+        eq(productMatches.channel, "amazon_uk")
+      )
+    )
+    .leftJoin(
       qogitaProducts,
-      eq(keepaCatalogItems.primaryEan, qogitaProducts.ean)
+      eq(qogitaProducts.id, productMatches.qogitaProductId)
     )
     .orderBy(desc(keepaCatalogItems.capturedAt))
     .limit(limit)
@@ -181,6 +223,10 @@ export async function listKeepaCatalogPage(
     const met = row.k.metrics as Record<string, unknown>;
     const hasQogita = Boolean(row.qogitaQid);
     const hasKeepaTimeseries = Boolean(met?.keepaTimeseries);
+    const tags = row.pmReasonTags;
+    const matchReasonTags = Array.isArray(tags)
+      ? tags.filter((t): t is string => typeof t === "string")
+      : [];
     return {
       matchId: row.k.id,
       asin: row.k.asin,
@@ -196,17 +242,23 @@ export async function listKeepaCatalogPage(
           ? met.salesRankDrops30
           : null,
       capturedAt: row.k.capturedAt,
-      confidence: hasQogita ? ("high" as const) : ("medium" as const),
+      confidence: hasQogita
+        ? row.pmConfidence === "high" || row.pmConfidence === "medium"
+          ? row.pmConfidence
+          : ("high" as const)
+        : ("medium" as const),
       qogitaId: row.qogitaQid ?? null,
       qogitaTitle: row.qogitaTitle ?? null,
       ean: row.qpEan ?? row.k.primaryEan ?? null,
       buyUnitPrice: row.buyUnitPrice,
       currency: row.currency ?? "EUR",
       stockUnits: row.stockUnits,
+      priceIncShipping: qogitaFlagsPriceIncShipping(row.qpFlags),
       browseNodeId: row.k.browseNodeId,
       bestsellerRank: row.k.bestsellerRank,
       keepaPrimaryEan: row.k.primaryEan,
       hasKeepaTimeseries,
+      matchReasonTags,
     };
   });
 
@@ -219,6 +271,13 @@ export type DashboardInventorySummary = {
   amazonUkMatches: number;
   withKeepaSnapshot: number;
   keepaCatalogRows: number;
+};
+
+export type DiagnosticsBreakdown = {
+  excelCatalogRows: number;
+  apiCatalogRows: number;
+  matchHigh: number;
+  matchMedium: number;
 };
 
 export async function getDashboardInventorySummary(): Promise<DashboardInventorySummary> {
@@ -250,6 +309,45 @@ export async function getDashboardInventorySummary(): Promise<DashboardInventory
     amazonUkMatches: amz?.c ?? 0,
     withKeepaSnapshot,
     keepaCatalogRows: kc?.c ?? 0,
+  };
+}
+
+export async function getDiagnosticsBreakdown(): Promise<DiagnosticsBreakdown> {
+  const db = getDb();
+  const [excelRow] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(qogitaProducts)
+    .where(sql`${qogitaProducts.qogitaId} like 'excel-gtin-%'`);
+  const [apiRow] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(qogitaProducts)
+    .where(sql`${qogitaProducts.qogitaId} not like 'excel-gtin-%'`);
+  const [highRow] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(productMatches)
+    .where(
+      and(
+        eq(productMatches.channel, "amazon_uk"),
+        isNotNull(productMatches.qogitaProductId),
+        eq(productMatches.confidence, "high")
+      )
+    );
+  const [mediumRow] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(productMatches)
+    .where(
+      and(
+        eq(productMatches.channel, "amazon_uk"),
+        isNotNull(productMatches.qogitaProductId),
+        eq(productMatches.confidence, "medium")
+      )
+    );
+
+  return {
+    excelCatalogRows: excelRow?.c ?? 0,
+    apiCatalogRows: apiRow?.c ?? 0,
+    matchHigh: highRow?.c ?? 0,
+    matchMedium: mediumRow?.c ?? 0,
   };
 }
 

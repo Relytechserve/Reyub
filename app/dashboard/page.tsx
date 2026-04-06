@@ -8,11 +8,12 @@ import { getDb } from "@/db";
 import { userSettings } from "@/db/schema";
 import {
   DEFAULT_EUR_TO_GBP,
-  estimateAmazonNetMarginPct,
-  parseEurPrice,
+  buyUnitCostGbp,
+  estimateAmazonNetMarginPctFromBuyGbp,
   parseGbpToNumber,
 } from "@/lib/margin/estimate";
 import {
+  getDiagnosticsBreakdown,
   getDashboardInventorySummary,
   getLatestSyncRun,
   listRecentQogitaExtractions,
@@ -74,13 +75,16 @@ export default async function DashboardPage({
   const pool = await listTopKeepaDashboardRows(120);
   const enriched = pool.map((row) => {
     const gbp = parseGbpToNumber(row.amazonBuyBoxGbp);
-    const eur = parseEurPrice(row.buyUnitPrice);
+    const buyGbp = buyUnitCostGbp({
+      currency: row.currency,
+      buyUnitPrice: row.buyUnitPrice,
+      eurToGbp,
+    });
     let estimatedMarginPct: number | null = null;
-    if (gbp != null && eur != null && row.qogitaId) {
-      estimatedMarginPct = estimateAmazonNetMarginPct({
-        amazonBuyBoxGbp: gbp,
-        buyUnitEur: eur,
-        eurToGbp,
+    if (gbp != null && buyGbp != null && row.qogitaId) {
+      estimatedMarginPct = estimateAmazonNetMarginPctFromBuyGbp({
+        amazonSellGbp: gbp,
+        buyCostGbp: buyGbp,
       });
     }
     return { ...row, estimatedMarginPct };
@@ -96,10 +100,11 @@ export default async function DashboardPage({
 
   const topRows = marginFiltered.slice(0, 20);
 
-  const [summary, latestRun, qogitaSamples] = await Promise.all([
+  const [summary, latestRun, qogitaSamples, breakdown] = await Promise.all([
     getDashboardInventorySummary(),
     getLatestSyncRun(),
     listRecentQogitaExtractions(15),
+    getDiagnosticsBreakdown(),
   ]);
 
   const envHints = {
@@ -120,6 +125,12 @@ export default async function DashboardPage({
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Dashboard
           </h1>
+          <Link
+            href="/dashboard/sourcing"
+            className="rounded-lg border border-emerald-600/40 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-900 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-950/50 dark:text-emerald-100 dark:hover:bg-emerald-900/40"
+          >
+            Sourcing opportunities
+          </Link>
           <Link
             href="/dashboard/keepa"
             className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
@@ -157,7 +168,8 @@ export default async function DashboardPage({
           <strong>1)</strong> Keepa bestseller discovery (browse nodes you configure) →
           store Amazon demand in <code className="text-xs">keepa_catalog_items</code>.
           <strong> 2)</strong> Qogita offers → <code className="text-xs">qogita_products</code>.
-          <strong> 3)</strong> Match in the database by EAN. Set{" "}
+          <strong> 3)</strong> Match in the database (GTIN ladder + optional title
+          similarity). Set{" "}
           <code className="text-xs">KEEPA_BESTSELLER_CATEGORY_IDS</code> in{" "}
           <code className="text-xs">.env.local</code>.
         </p>
@@ -217,6 +229,7 @@ export default async function DashboardPage({
         latestRun={latestRun}
         qogitaSamples={qogitaSamples}
         envHints={envHints}
+        breakdown={breakdown}
       />
 
       <Suspense fallback={null}>

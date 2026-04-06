@@ -25,6 +25,8 @@ export type FetchKeepaProductsByAsinsOptions = {
   includeHistory?: boolean;
   /** Limit history to last N days (`days` query param). Only when includeHistory. */
   historyDays?: number;
+  /** Pause between each 100-ASIN product request (rate limits / token pacing). */
+  betweenChunkDelayMs?: number;
 };
 
 /** Batch ASIN lookup (max 100 per request). ASINs are 10-char alphanumeric. */
@@ -45,8 +47,16 @@ export async function fetchKeepaProductsByAsins(
     ),
   ];
   const out: KeepaProduct[] = [];
+  const pacingMs =
+    options.betweenChunkDelayMs != null &&
+    options.betweenChunkDelayMs > 0
+      ? Math.min(60_000, Math.floor(options.betweenChunkDelayMs))
+      : 0;
 
   for (let i = 0; i < cleaned.length; i += 100) {
+    if (pacingMs > 0 && i > 0) {
+      await new Promise<void>((r) => setTimeout(r, pacingMs));
+    }
     const chunk = cleaned.slice(i, i + 100);
     const batch = await fetchProductsChunkOrSingles(
       chunk,

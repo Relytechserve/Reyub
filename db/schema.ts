@@ -20,6 +20,9 @@ export const matchConfidenceEnum = pgEnum("match_confidence", [
   "medium",
 ]);
 
+/** Operator review state for a matched Amazon ↔ Qogita link. */
+export const matchDecisionEnum = pgEnum("match_decision", ["approve", "reject"]);
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: text("email").notNull().unique(),
@@ -321,6 +324,31 @@ export const productMatches = pgTable(
     index("product_matches_qogita_idx").on(t.qogitaProductId),
     index("product_matches_canonical_idx").on(t.canonicalProductId),
     uniqueIndex("product_matches_channel_ext_uidx").on(t.channel, t.externalId),
+  ]
+);
+
+export const productMatchDecisions = pgTable(
+  "product_match_decisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    productMatchId: uuid("product_match_id")
+      .notNull()
+      .references(() => productMatches.id, { onDelete: "cascade" }),
+    decision: matchDecisionEnum("decision").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("product_match_decisions_match_user_uidx").on(
+      t.productMatchId,
+      t.userId
+    ),
+    index("product_match_decisions_user_idx").on(t.userId),
+    index("product_match_decisions_decision_idx").on(t.decision),
   ]
 );
 

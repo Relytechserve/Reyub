@@ -19,6 +19,22 @@ export function estimateAmazonNetMarginPct(input: {
   return ((netSell - buyGbp) / netSell) * 100;
 }
 
+/** Net £ retained per unit after flat fee assumption (not tax advice). */
+export function estimateNetProfitGbpPerUnit(input: {
+  amazonSellGbp: number;
+  buyUnitEur: number;
+  eurToGbp: number;
+  amazonFeePct?: number;
+}): number | null {
+  const fee = input.amazonFeePct ?? 0.15;
+  const buyGbp = input.buyUnitEur * input.eurToGbp;
+  const netSell = input.amazonSellGbp * (1 - fee);
+  if (!Number.isFinite(netSell)) {
+    return null;
+  }
+  return netSell - buyGbp;
+}
+
 export function parseGbpToNumber(gbp: string | null | undefined): number | null {
   if (!gbp) {
     return null;
@@ -39,3 +55,49 @@ export function parseEurPrice(
 
 /** Default when user has not set FX in settings (approximate). */
 export const DEFAULT_EUR_TO_GBP = 0.85;
+
+/** Landed buy cost in GBP from Qogita unit price (EUR uses `eurToGbp`; GBP is direct). */
+export function buyUnitCostGbp(input: {
+  currency: string | null | undefined;
+  buyUnitPrice: string | null | undefined;
+  eurToGbp: number;
+}): number | null {
+  if (!input.buyUnitPrice) {
+    return null;
+  }
+  const c = (input.currency ?? "EUR").toUpperCase();
+  if (c === "GBP") {
+    return parseGbpToNumber(input.buyUnitPrice);
+  }
+  const eur = parseEurPrice(input.buyUnitPrice);
+  if (eur == null) {
+    return null;
+  }
+  return eur * input.eurToGbp;
+}
+
+export function estimateAmazonNetMarginPctFromBuyGbp(input: {
+  amazonSellGbp: number;
+  buyCostGbp: number;
+  amazonFeePct?: number;
+}): number | null {
+  const fee = input.amazonFeePct ?? 0.15;
+  const netSell = input.amazonSellGbp * (1 - fee);
+  if (!Number.isFinite(netSell) || netSell <= 0) {
+    return null;
+  }
+  return ((netSell - input.buyCostGbp) / netSell) * 100;
+}
+
+export function estimateNetProfitGbpPerUnitFromBuyGbp(input: {
+  amazonSellGbp: number;
+  buyCostGbp: number;
+  amazonFeePct?: number;
+}): number | null {
+  const fee = input.amazonFeePct ?? 0.15;
+  const netSell = input.amazonSellGbp * (1 - fee);
+  if (!Number.isFinite(netSell)) {
+    return null;
+  }
+  return netSell - input.buyCostGbp;
+}

@@ -12,18 +12,42 @@ export function qogitaOffersEntryPath(): string {
   return p.includes("?") ? p : p.endsWith("/") ? p : `${p}/`;
 }
 
-/** Pull offers (paginated when API provides next / page). */
-export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
+export type QogitaOffersFetchResult = {
+  items: unknown[];
+  pagesFetched: number;
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Paginate Qogita offers until no next page, empty batch, or a limit is hit.
+ * @param maxItems — stop once at least this many rows collected (then slice). Omit for no row cap.
+ */
+export async function fetchOfferPages(options: {
+  maxPages: number;
+  maxItems?: number;
+  /** Pause between page requests (rate limits / burst control). */
+  delayMsBetweenPages?: number;
+}): Promise<QogitaOffersFetchResult> {
   const collected: unknown[] = [];
   let path = qogitaOffersEntryPath();
   let page = 1;
-  /** Enough pages for large syncs (e.g. 2000 offers at ~20/page ≈ 100 requests). */
-  const maxPages = Math.min(
-    500,
-    Math.max(25, Math.ceil(maxOffers / 20))
-  );
+  let pagesFetched = 0;
 
-  for (let i = 0; i < maxPages && collected.length < maxOffers; i++) {
+  for (let i = 0; i < options.maxPages; i++) {
+    if (
+      options.maxItems != null &&
+      collected.length >= options.maxItems
+    ) {
+      break;
+    }
+
+    if (options.delayMsBetweenPages && pagesFetched > 0) {
+      await sleep(options.delayMsBetweenPages);
+    }
+
     const res = await qogitaFetch(path);
     const text = await res.text();
     if (!res.ok) {
@@ -39,6 +63,7 @@ export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
     }
 
     const batch = extractItems(data);
+    pagesFetched += 1;
     collected.push(...batch);
 
     const nextPath = resolveNextPath(data, res.headers.get("link"), path, page);
@@ -49,7 +74,50 @@ export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
     page += 1;
   }
 
-  return collected.slice(0, maxOffers);
+  const items =
+    options.maxItems != null
+      ? collected.slice(0, options.maxItems)
+      : collected;
+
+  return { items, pagesFetched };
+}
+
+/** Pull offers (paginated when API provides next / page). */
+export async function fetchOffersUpTo(maxOffers: number): Promise<unknown[]> {
+  const maxPages = Math.min(
+    500,
+    Math.max(25, Math.ceil(maxOffers / 20))
+  );
+  const delayRaw = Number(
+    process.env.QOGITA_SYNC_PAGE_DELAY_MS?.trim() ?? ""
+  );
+  const delayMsBetweenPages =
+    Number.isFinite(delayRaw) && delayRaw > 0
+      ? Math.min(10_000, Math.floor(delayRaw))
+      : undefined;
+
+  const { items } = await fetchOfferPages({
+    maxPages,
+    maxItems: maxOffers,
+    delayMsBetweenPages,
+  });
+  return items;
+}
+
+/**
+ * Download as much of the Qogita offers catalog as the API exposes (paginated),
+ * up to safety limits. Use for filling `qogita_products` for in-app EAN matching.
+ */
+export async function fetchQogitaOffersFullCatalog(options: {
+  maxPages: number;
+  maxRowsSafety: number;
+  delayMsBetweenPages?: number;
+}): Promise<QogitaOffersFetchResult> {
+  return fetchOfferPages({
+    maxPages: options.maxPages,
+    maxItems: options.maxRowsSafety,
+    delayMsBetweenPages: options.delayMsBetweenPages,
+  });
 }
 
 function extractItems(data: unknown): unknown[] {

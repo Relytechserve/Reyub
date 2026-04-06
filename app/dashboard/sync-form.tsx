@@ -31,7 +31,10 @@ export function SyncQogitaKeepaForm() {
         <SubmitButton />
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           Runs the full pipeline: Keepa bestseller ASINs → DB, Qogita offers → DB,
-          then EAN match. Requires{" "}
+          then EAN match. Catalog size and Keepa breadth are controlled by env (see{" "}
+          <code className="text-xs">QOGITA_SYNC_FULL_CATALOG</code>,{" "}
+          <code className="text-xs">QOGITA_SYNC_MAX_OFFERS</code>, Keepa slice/batch
+          vars in <code className="text-xs">.env.example</code>). Requires{" "}
           <code className="text-xs">KEEPA_BESTSELLER_CATEGORY_IDS</code>.
         </p>
       </form>

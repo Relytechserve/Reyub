@@ -6,13 +6,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import {
-  keepaCatalogItems,
-  priceSnapshots,
-  productMatches,
-  qogitaProducts,
-  syncRuns,
-} from "@/db/schema";
+import { keepaCatalogItems, qogitaProducts, syncRuns } from "@/db/schema";
 import {
   ensureAmazonExternalRef,
   ensureCanonicalForAmazonListing,
@@ -28,17 +22,33 @@ import {
   pickKeepaTimeseriesFields,
 } from "@/lib/keepa/product";
 import { keepaEansFromProduct } from "@/lib/keepa/utils";
+import { runAmazonQogitaMatching } from "@/lib/matching/amazon-qogita-sync";
 import {
-  fetchOffersUpTo,
+  fetchOfferPages,
+  fetchQogitaOffersFullCatalog,
   mapOfferToRow,
   qogitaOffersEntryPath,
 } from "@/lib/qogita/offers";
 
 import type { SyncRunDiagnosticsStats } from "@/lib/sync/types";
 
-function envTruthy(raw: string | undefined): boolean {
-  const v = raw?.trim().toLowerCase();
+/** Keepa subcategory expansion: on by default so a single parent node can exceed ~100 ASINs. Set KEEPA_BESTSELLER_EXPAND_CHILDREN=0 to disable (saves tokens). */
+function envQogitaFullCatalog(): boolean {
+  const v = process.env.QOGITA_SYNC_FULL_CATALOG?.trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
+}
+
+function envKeepaExpandChildren(): boolean {
+  const v = process.env.KEEPA_BESTSELLER_EXPAND_CHILDREN?.trim().toLowerCase();
+  if (
+    v === "0" ||
+    v === "false" ||
+    v === "no" ||
+    v === "off"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export type FullPipelineResult = {
@@ -120,8 +130,25 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
   let keepaProductsFetched = 0;
   let keepaCatalogRowsUpserted = 0;
   let matchesLinked = 0;
+  let matchEanStage = 0;
+  let matchFuzzyStage = 0;
 
-  const maxOffers = Number(process.env.QOGITA_SYNC_MAX_OFFERS ?? "100") || 100;
+  const maxOffers =
+    Number(process.env.QOGITA_SYNC_MAX_OFFERS ?? "2000") || 2000;
+  const qogitaPageDelayMs = (() => {
+    const d = Number(process.env.QOGITA_SYNC_PAGE_DELAY_MS?.trim() ?? "");
+    if (!Number.isFinite(d) || d <= 0) {
+      return undefined;
+    }
+    return Math.min(10_000, Math.floor(d));
+  })();
+  const keepaProductBatchDelayMs = (() => {
+    const d = Number(process.env.KEEPA_PRODUCT_BATCH_DELAY_MS?.trim() ?? "");
+    if (!Number.isFinite(d) || d <= 0) {
+      return undefined;
+    }
+    return Math.min(60_000, Math.floor(d));
+  })();
   const keepaKey = process.env.KEEPA_API_KEY?.trim();
   const domain =
     Number(process.env.KEEPA_DOMAIN?.trim() ?? "") || KEEPA_DOMAIN_UK;
@@ -137,8 +164,20 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
       Number(process.env.KEEPA_BESTSELLERS_PER_CATEGORY ?? "50") || 50
     )
   );
-  const keepaExpandChildren = envTruthy(
-    process.env.KEEPA_BESTSELLER_EXPAND_CHILDREN
+  const keepaExpandChildren = envKeepaExpandChildren();
+  const keepaExpandDepth = Math.min(
+    2,
+    Math.max(
+      1,
+      Number(process.env.KEEPA_BESTSELLER_EXPAND_DEPTH ?? "1") || 1
+    )
+  ) as 1 | 2;
+  const keepaMaxCategoryApiFetches = Math.min(
+    120,
+    Math.max(
+      10,
+      Number(process.env.KEEPA_MAX_CATEGORY_API_FETCHES ?? "80") || 80
+    )
   );
   const keepaMaxBestsellerCategories = Math.min(
     500,
@@ -162,6 +201,10 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
   );
 
   let keepaCategoryIdsForStats = categoryIds;
+  let keepaCategorySliceNote: string | undefined;
+  let qogitaPagesFetched = 0;
+  let qogitaFullCatalogRun = false;
+  let qogitaMaxRowsSafetyStat: number | undefined;
 
   const finalizeStats = (): SyncRunDiagnosticsStats => ({
     offersFetched,
@@ -174,19 +217,62 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     keepaRowsSaved: keepaCatalogRowsUpserted,
     keepaSkippedNoAsin: 0,
     matchesWithQogitaEan: matchesLinked,
+    matchEanStage,
+    matchFuzzyStage,
     qogitaOffersPath: qogitaOffersEntryPath(),
     categoryFilterApplied: categoryIds.length > 0,
     categoryNote:
       keepaCategoryIdsForStats.length > 0
-        ? `Keepa bestsellers for ${keepaCategoryIdsForStats.length} browse node(s)${keepaExpandChildren ? " (subcategories expanded from KEEPA_BESTSELLER_CATEGORY_IDS)" : ""}: ${keepaCategoryIdsForStats.slice(0, 24).join(", ")}${keepaCategoryIdsForStats.length > 24 ? "…" : ""}. Qogita GET offers path is separate — match happens in DB by EAN.`
+        ? `Keepa bestsellers for ${keepaCategoryIdsForStats.length} browse node(s)${keepaExpandChildren ? (keepaExpandDepth > 1 ? " (subcategories expanded, depth 2)" : " (subcategories expanded from KEEPA_BESTSELLER_CATEGORY_IDS)") : " (expansion off — ~100 ASINs per root max)"}: ${keepaCategoryIdsForStats.slice(0, 24).join(", ")}${keepaCategoryIdsForStats.length > 24 ? "…" : ""}. Qogita GET offers path is separate — match happens in DB by EAN.`
         : "Set KEEPA_BESTSELLER_CATEGORY_IDS to Amazon browse node IDs for bestseller discovery.",
+    qogitaFullCatalog: qogitaFullCatalogRun,
+    qogitaPagesFetched,
+    qogitaMaxRowsSafety: qogitaMaxRowsSafetyStat,
+    keepaCategorySliceNote,
   });
 
   try {
     // —— 1) Qogita wholesale catalog (independent ingest) ——
     let offers: unknown[] = [];
     try {
-      offers = await fetchOffersUpTo(maxOffers);
+      if (envQogitaFullCatalog()) {
+        qogitaFullCatalogRun = true;
+        const maxPages = Math.min(
+          50_000,
+          Math.max(
+            1,
+            Number(process.env.QOGITA_SYNC_MAX_PAGES ?? "5000") || 5000
+          )
+        );
+        const maxRowsSafety = Math.min(
+          5_000_000,
+          Math.max(
+            1,
+            Number(process.env.QOGITA_SYNC_MAX_ROWS_SAFETY ?? "500000") ||
+              500_000
+          )
+        );
+        qogitaMaxRowsSafetyStat = maxRowsSafety;
+        const r = await fetchQogitaOffersFullCatalog({
+          maxPages,
+          maxRowsSafety,
+          delayMsBetweenPages: qogitaPageDelayMs,
+        });
+        offers = r.items;
+        qogitaPagesFetched = r.pagesFetched;
+      } else {
+        const maxPages = Math.min(
+          500,
+          Math.max(25, Math.ceil(maxOffers / 20))
+        );
+        const r = await fetchOfferPages({
+          maxPages,
+          maxItems: maxOffers,
+          delayMsBetweenPages: qogitaPageDelayMs,
+        });
+        offers = r.items;
+        qogitaPagesFetched = r.pagesFetched;
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`Qogita fetch failed: ${msg}`);
@@ -283,10 +369,31 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
           categoryIds,
           (msg) => {
             errors.push(msg);
+          },
+          {
+            maxDepth: keepaExpandDepth,
+            maxCategoryFetches: keepaMaxCategoryApiFetches,
           }
         );
       }
-      keepaCategoryIdsForStats = resolvedCategoryIds;
+
+      const fullResolved = resolvedCategoryIds;
+      const sliceOffset = Math.max(
+        0,
+        Number(process.env.KEEPA_BESTSELLER_CATEGORY_SLICE_OFFSET ?? "0") || 0
+      );
+      const sliceLenRaw =
+        process.env.KEEPA_BESTSELLER_CATEGORY_SLICE_LENGTH?.trim() ?? "";
+      let categoriesForBestsellers = fullResolved;
+      if (sliceLenRaw !== "") {
+        const sliceLen = Math.max(1, Number(sliceLenRaw) || 1);
+        categoriesForBestsellers = fullResolved.slice(
+          sliceOffset,
+          sliceOffset + sliceLen
+        );
+        keepaCategorySliceNote = `Keepa category slice: offset ${sliceOffset}, length ${categoriesForBestsellers.length}, expanded pool ${fullResolved.length}`;
+      }
+      keepaCategoryIdsForStats = categoriesForBestsellers;
 
       const bestsellerRange =
         Number(process.env.KEEPA_BESTSELLER_RANGE ?? "30") || 30;
@@ -296,7 +403,7 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
       >();
       let categoriesUsed = 0;
 
-      for (const catId of resolvedCategoryIds) {
+      for (const catId of categoriesForBestsellers) {
         if (categoriesUsed >= keepaMaxBestsellerCategories) {
           break;
         }
@@ -339,6 +446,7 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             statsDays: 30,
             includeHistory: keepaIncludeHistory,
             historyDays: keepaIncludeHistory ? keepaHistoryDays : undefined,
+            betweenChunkDelayMs: keepaProductBatchDelayMs,
           });
           keepaProductsFetched = products.length;
           const now = new Date();
@@ -350,7 +458,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
               continue;
             }
             const meta = rankByAsin.get(summary.asin);
-            const primaryEan = keepaEansFromProduct(kp)[0] ?? null;
+            const eanCandidates = keepaEansFromProduct(kp);
+            const primaryEan = eanCandidates[0] ?? null;
 
             const amazonGbp = formatGbpFromKeepaMinor(summary.buyBoxMinor);
             const avg30Gbp = formatGbpFromKeepaMinor(summary.avg30BuyBoxMinor);
@@ -359,6 +468,7 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             const metrics = {
               amazonAsin: summary.asin,
               amazonTitle: summary.title,
+              eanCandidates,
               amazonBuyBoxGbp: amazonGbp,
               buyBoxMinor: summary.buyBoxMinor,
               avg30BuyBoxGbp: avg30Gbp,
@@ -425,102 +535,16 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
       }
     }
 
-    // —— 3) Match: keepa_catalog_items.primary_ean ↔ qogita_products.ean ——
-    const catalog = await db.select().from(keepaCatalogItems);
+    // —— 3) Match: GTIN ladder + optional title fuzzy ——
     const now = new Date();
-
-    for (const item of catalog) {
-      if (!item.primaryEan) {
-        continue;
-      }
-      const [qp] = await db
-        .select()
-        .from(qogitaProducts)
-        .where(eq(qogitaProducts.ean, item.primaryEan))
-        .limit(1);
-      if (!qp) {
-        continue;
-      }
-
-      await ensureCanonicalForQogitaProductId(db, qp.id);
-      const [refreshed] = await db
-        .select()
-        .from(qogitaProducts)
-        .where(eq(qogitaProducts.id, qp.id))
-        .limit(1);
-      const canonicalId = refreshed?.canonicalProductId ?? null;
-
-      const met = item.metrics as Record<string, unknown>;
-
-      const existing = await db
-        .select({ id: productMatches.id })
-        .from(productMatches)
-        .where(
-          and(
-            eq(productMatches.channel, "amazon_uk"),
-            eq(productMatches.externalId, item.asin)
-          )
-        )
-        .limit(1);
-
-      let matchId: string;
-      if (existing[0]) {
-        matchId = existing[0].id;
-        await db
-          .update(productMatches)
-          .set({
-            qogitaProductId: qp.id,
-            canonicalProductId: canonicalId,
-            confidence: "high",
-            reasonTags: ["ean_exact"],
-            updatedAt: now,
-          })
-          .where(eq(productMatches.id, matchId));
-      } else {
-        const inserted = await db
-          .insert(productMatches)
-          .values({
-            qogitaProductId: qp.id,
-            canonicalProductId: canonicalId,
-            channel: "amazon_uk",
-            externalId: item.asin,
-            confidence: "high",
-            reasonTags: ["ean_exact"],
-          })
-          .returning({ id: productMatches.id });
-        const ins = inserted[0];
-        if (!ins) {
-          continue;
-        }
-        matchId = ins.id;
-      }
-
-      if (canonicalId) {
-        await ensureAmazonExternalRef(db, canonicalId, domain, item.asin, {
-          asin: item.asin,
-          title: item.title,
-        });
-      }
-
-      await db.insert(priceSnapshots).values({
-        productMatchId: matchId,
-        source: "keepa",
-        capturedAt: now,
-        metrics: {
-          ...met,
-          qogita: {
-            qogitaId: qp.qogitaId,
-            title: qp.title,
-            ean: qp.ean,
-            buyUnitPrice: qp.buyUnitPrice,
-            currency: qp.currency,
-            stockUnits: qp.stockUnits,
-          },
-        },
-      });
-
-      matchesLinked += 1;
-    }
+    const matchStats = await runAmazonQogitaMatching(db, {
+      now,
+      domain,
+      errors,
+    });
+    matchEanStage = matchStats.eanMatches;
+    matchFuzzyStage = matchStats.fuzzyMatches;
+    matchesLinked = matchStats.eanMatches + matchStats.fuzzyMatches;
 
     await persistSyncRun(
       db,

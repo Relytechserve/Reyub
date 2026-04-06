@@ -7,12 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run",
+    "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "qogita:auth": "tsx scripts/test-qogita-auth.ts",
-    "sync:pipeline": "tsx scripts/run-pipeline-sync.ts"
+    "sync:pipeline": "tsx scripts/run-pipeline-sync.ts",
+    "import:qogita-excel": "tsx scripts/import-qogita-excel-catalog.ts",
+    "import:qogita-excel:dry": "tsx scripts/import-qogita-excel-catalog.ts --dry-run",
+    "verify:sourcing": "tsx scripts/verify-sourcing.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.1",
@@ -35,8 +42,10 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
+    "exceljs": "^4.4.0",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

@@ -24,6 +24,12 @@ type Props = {
     keepaKeyPresent: boolean;
     qogitaAuthPresent: boolean;
   };
+  breakdown: {
+    excelCatalogRows: number;
+    apiCatalogRows: number;
+    matchHigh: number;
+    matchMedium: number;
+  };
 };
 
 function isStats(s: unknown): s is SyncRunDiagnosticsStats {
@@ -39,6 +45,7 @@ export function ExtractionDiagnostics({
   latestRun,
   qogitaSamples,
   envHints,
+  breakdown,
 }: Props) {
   const stats = latestRun && isStats(latestRun.stats) ? latestRun.stats : null;
 
@@ -79,6 +86,17 @@ export function ExtractionDiagnostics({
           the dev server after editing <code className="text-xs">.env.local</code>
           .
         </p>
+        <p className="mt-2 text-xs text-zinc-500">
+          <strong>~100 Keepa rows?</strong> Matching prefers **all barcodes** from the
+          Keepa product, then optional **title similarity** (
+          <code className="text-xs">MATCH_FUZZY_TITLES=0</code> to disable) — pull
+          enough Qogita + Keepa data. Subcategory expansion is{" "}
+          <strong>on by default</strong> (disable with{" "}
+          <code className="text-xs">KEEPA_BESTSELLER_EXPAND_CHILDREN=0</code>
+          ). If the count stays low, set{" "}
+          <code className="text-xs">KEEPA_BESTSELLER_EXPAND_DEPTH=2</code> on the
+          server and run sync again.
+        </p>
       </div>
 
       {latestRun ? (
@@ -97,6 +115,8 @@ export function ExtractionDiagnostics({
             <ul className="mt-3 grid gap-1 text-sm text-zinc-700 dark:text-zinc-300 sm:grid-cols-2">
               <li>Qogita offers pulled: {stats.offersFetched}</li>
               <li>Rows upserted to DB: {stats.qogitaRowsUpserted}</li>
+              <li>Qogita rows (Excel import): {breakdown.excelCatalogRows}</li>
+              <li>Qogita rows (non-Excel/API-like): {breakdown.apiCatalogRows}</li>
               <li>Offers with EAN after mapping: {stats.offersWithEanInBatch}</li>
               <li>Unique EANs sent to Keepa: {stats.uniqueEansSentToKeepa}</li>
               <li>Keepa key configured: {String(stats.keepaKeyConfigured)}</li>
@@ -104,7 +124,38 @@ export function ExtractionDiagnostics({
               <li>Keepa product objects returned: {stats.keepaProductsReturned}</li>
               <li>ASIN rows saved + snapshot: {stats.keepaRowsSaved}</li>
               <li>Keepa rows skipped (no ASIN): {stats.keepaSkippedNoAsin}</li>
-              <li>With Qogita link (same GTIN): {stats.matchesWithQogitaEan}</li>
+              <li>
+                With Qogita link (GTIN + optional title):{" "}
+                {stats.matchesWithQogitaEan}
+              </li>
+              <li>Matched ASINs (high confidence): {breakdown.matchHigh}</li>
+              <li>Matched ASINs (medium confidence): {breakdown.matchMedium}</li>
+              {"matchEanStage" in stats &&
+              typeof stats.matchEanStage === "number" ? (
+                <li>… of which GTIN stage: {stats.matchEanStage}</li>
+              ) : null}
+              {"matchFuzzyStage" in stats &&
+              typeof stats.matchFuzzyStage === "number" ? (
+                <li>… of which title-similarity stage: {stats.matchFuzzyStage}</li>
+              ) : null}
+              {"qogitaFullCatalog" in stats && stats.qogitaFullCatalog ? (
+                <li className="sm:col-span-2">
+                  Qogita full-catalog mode: yes · pages fetched:{" "}
+                  {"qogitaPagesFetched" in stats
+                    ? stats.qogitaPagesFetched
+                    : "—"}{" "}
+                  · row safety cap:{" "}
+                  {"qogitaMaxRowsSafety" in stats
+                    ? stats.qogitaMaxRowsSafety
+                    : "—"}
+                </li>
+              ) : (
+                <li className="sm:col-span-2">
+                  Qogita full-catalog mode: no (set{" "}
+                  <code className="text-xs">QOGITA_SYNC_FULL_CATALOG=1</code> to
+                  paginate until the API ends or a safety cap)
+                </li>
+              )}
               <li className="sm:col-span-2">
                 Qogita path:{" "}
                 <code className="text-xs">{stats.qogitaOffersPath}</code>
@@ -112,6 +163,12 @@ export function ExtractionDiagnostics({
               <li className="sm:col-span-2 text-zinc-600 dark:text-zinc-400">
                 Categories: {stats.categoryNote}
               </li>
+              {"keepaCategorySliceNote" in stats &&
+              stats.keepaCategorySliceNote ? (
+                <li className="sm:col-span-2 text-zinc-600 dark:text-zinc-400">
+                  {stats.keepaCategorySliceNote}
+                </li>
+              ) : null}
             </ul>
           ) : (
             <p className="mt-2 text-sm text-zinc-500">No structured stats on this run.</p>

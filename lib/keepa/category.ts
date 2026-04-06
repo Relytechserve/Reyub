@@ -53,36 +53,10 @@ function normalizeChildIds(raw: unknown): string[] {
   return out;
 }
 
-/**
- * Direct child category browse node IDs for an Amazon category on the given domain.
- * If the API returns no children (leaf), returns an empty array.
- */
-export async function fetchDirectChildCategoryIds(
-  apiKey: string,
-  domain: number,
-  categoryId: string
-): Promise<string[]> {
-  const clean = categoryId.replace(/\D/g, "") || categoryId;
-  const params = new URLSearchParams({
-    key: apiKey,
-    domain: String(domain),
-    category: clean,
-    /** Ask Keepa to include child category ids when supported. */
-    children: "1",
-  });
-
-  const res = await fetch(`${KEEPA_BASE}/category?${params}`);
-  const json = (await res.json()) as CategoryLookupResponse;
-
-  if (json.error?.message) {
-    throw new Error(
-      `Keepa category: ${json.error.message}${json.error.type ? ` (${json.error.type})` : ""}`
-    );
-  }
-  if (!res.ok) {
-    throw new Error(`Keepa category HTTP ${res.status}`);
-  }
-
+function parseChildIdsFromCategoryJson(
+  json: CategoryLookupResponse,
+  clean: string
+): string[] {
   const fromCategoriesMap = (): string[] => {
     const cats = json.categories;
     if (!cats || typeof cats !== "object") {
@@ -94,7 +68,14 @@ export async function fetchDirectChildCategoryIds(
       Object.values(cats).find(
         (c) => c?.catId != null && String(c.catId) === clean
       );
-    return normalizeChildIds(node?.children);
+    let ids = normalizeChildIds(node?.children);
+    if (ids.length === 0) {
+      const values = Object.values(cats);
+      if (values.length === 1) {
+        ids = normalizeChildIds(values[0]?.children);
+      }
+    }
+    return ids;
   };
 
   const fromTopChildren = normalizeChildIds(json.children);
@@ -110,16 +91,90 @@ export async function fetchDirectChildCategoryIds(
   return fromCategoriesMap();
 }
 
+async function fetchCategoryJson(
+  apiKey: string,
+  domain: number,
+  categoryId: string,
+  includeChildrenFlag: boolean
+): Promise<CategoryLookupResponse> {
+  const clean = categoryId.replace(/\D/g, "") || categoryId;
+  const params = new URLSearchParams({
+    key: apiKey,
+    domain: String(domain),
+    category: clean,
+  });
+  if (includeChildrenFlag) {
+    params.set("children", "1");
+  }
+  const res = await fetch(`${KEEPA_BASE}/category?${params}`);
+  const json = (await res.json()) as CategoryLookupResponse;
+
+  if (json.error?.message) {
+    throw new Error(
+      `Keepa category: ${json.error.message}${json.error.type ? ` (${json.error.type})` : ""}`
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`Keepa category HTTP ${res.status}`);
+  }
+  return json;
+}
+
 /**
- * For each root id: if it has direct children, use those; otherwise keep the root (leaf).
- * Deduplicates and returns a stable sorted list.
+ * Direct child category browse node IDs for an Amazon category on the given domain.
+ * If the API returns no children (leaf), returns an empty array.
+ */
+export async function fetchDirectChildCategoryIds(
+  apiKey: string,
+  domain: number,
+  categoryId: string
+): Promise<string[]> {
+  const clean = categoryId.replace(/\D/g, "") || categoryId;
+
+  let json = await fetchCategoryJson(apiKey, domain, clean, true);
+  let ids = parseChildIdsFromCategoryJson(json, clean);
+  if (ids.length === 0) {
+    json = await fetchCategoryJson(apiKey, domain, clean, false);
+    ids = parseChildIdsFromCategoryJson(json, clean);
+  }
+  return ids;
+}
+
+export type ExpandBestsellerCategoryOptions = {
+  /** 1 = direct children of each root only; 2 = also expand each child (more API calls, broader ASIN coverage). */
+  maxDepth: 1 | 2;
+  maxCategoryFetches: number;
+};
+
+/**
+ * Resolve browse node IDs for bestseller pulls: expand Amazon category tree from configured roots.
+ * Depth 2 helps when the parent has few direct children but richer sub-subcategories.
  */
 export async function expandRootsToBestsellerCategoryIds(
   apiKey: string,
   domain: number,
   roots: string[],
-  onError: (message: string) => void
+  onError: (message: string) => void,
+  options?: Partial<ExpandBestsellerCategoryOptions>
 ): Promise<string[]> {
+  const maxDepth = options?.maxDepth ?? 1;
+  const maxFetches = options?.maxCategoryFetches ?? 80;
+  let fetches = 0;
+
+  const childrenOf = async (id: string): Promise<string[]> => {
+    if (fetches >= maxFetches) {
+      return [];
+    }
+    fetches += 1;
+    try {
+      return await fetchDirectChildCategoryIds(apiKey, domain, id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      onError(`Keepa category expand ${id}: ${msg}`);
+      return [];
+    }
+  };
+
   const out = new Set<string>();
 
   for (const root of roots) {
@@ -127,25 +182,33 @@ export async function expandRootsToBestsellerCategoryIds(
     if (!clean) {
       continue;
     }
-    try {
-      const children = await fetchDirectChildCategoryIds(
-        apiKey,
-        domain,
-        clean
-      );
-      if (children.length > 0) {
-        for (const c of children) {
+
+    const level1 = await childrenOf(clean);
+    if (level1.length === 0) {
+      out.add(clean);
+      continue;
+    }
+
+    if (maxDepth <= 1) {
+      for (const c of level1) {
+        out.add(c);
+      }
+      continue;
+    }
+
+    for (const child of level1) {
+      const level2 = await childrenOf(child);
+      if (level2.length === 0) {
+        out.add(child);
+      } else {
+        for (const c of level2) {
           out.add(c);
         }
-      } else {
-        out.add(clean);
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      onError(`Keepa category expand ${clean}: ${msg}`);
-      out.add(clean);
     }
   }
 
-  return [...out].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return [...out].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true })
+  );
 }

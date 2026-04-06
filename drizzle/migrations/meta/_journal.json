@@ -29,6 +29,20 @@
       "when": 1775330947835,
       "tag": "0003_silent_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775430000000,
+      "tag": "0004_match_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775433600000,
+      "tag": "0005_match_decisions_per_user",
+      "breakpoints": true
     }
   ]
 }

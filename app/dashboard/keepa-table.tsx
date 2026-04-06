@@ -2,6 +2,16 @@ import type { KeepaDashboardRow } from "@/lib/sync/qogita-keepa";
 
 type Row = KeepaDashboardRow & { estimatedMarginPct: number | null };
 
+function showGbpIncShippingNote(
+  priceIncShipping: boolean,
+  currency: string | null | undefined
+): boolean {
+  return (
+    priceIncShipping &&
+    (currency ?? "").trim().toUpperCase() === "GBP"
+  );
+}
+
 export function KeepaTopTable({
   rows,
   showMargin,
@@ -77,12 +87,21 @@ export function KeepaTopTable({
                   >
                     {m.asin}
                   </a>
-                  {m.confidence === "medium" ? (
+                  {!m.qogitaId ? (
                     <span
                       className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
                       title="No Qogita offer linked for this ASIN"
                     >
                       Amazon only
+                    </span>
+                  ) : m.matchReasonTags?.some((t) =>
+                      t.startsWith("title_token")
+                    ) ? (
+                    <span
+                      className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-violet-900 dark:bg-violet-900/40 dark:text-violet-100"
+                      title="Matched by title similarity — verify before buying"
+                    >
+                      Title match
                     </span>
                   ) : null}
                 </div>
@@ -121,6 +140,17 @@ export function KeepaTopTable({
                       Buy {m.buyUnitPrice ?? "—"} {m.currency ?? ""} · Stock{" "}
                       {m.stockUnits ?? "—"}
                     </div>
+                    {showGbpIncShippingNote(
+                      m.priceIncShipping,
+                      m.currency
+                    ) ? (
+                      <p
+                        className="mt-1 text-[10px] text-amber-800 dark:text-amber-200/90"
+                        title="Catalog price includes shipping; estimated margin is not net ex-shipping landed cost."
+                      >
+                        Inc. shipping — margin ≠ ex-shipping buy
+                      </p>
+                    ) : null}
                   </>
                 ) : (
                   <span className="text-zinc-500 dark:text-zinc-500">

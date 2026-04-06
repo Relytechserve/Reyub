@@ -24,6 +24,12 @@
 .DS_Store
 *.pem
 
+# local tooling / reference exports (do not commit buyer catalogs)
+.venv-xlsx/
+reference/*.xlsx
+reference/*.csv
+/Filtered_Catalog_Download*.xlsx
+
 # debug
 npm-debug.log*
 yarn-debug.log*
