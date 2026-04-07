@@ -135,10 +135,12 @@ export function SourcingTable({
   }
 
   return (
-    <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
+    <div className="mt-4 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="overflow-x-auto">
+        <div className="max-h-[72vh] overflow-y-auto">
+      <table className="min-w-[1400px] border-collapse text-left text-sm">
         <thead>
-          <tr className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
+          <tr className="sticky top-0 z-10 border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
               Amazon
             </th>
@@ -539,6 +541,8 @@ export function SourcingTable({
           ))}
         </tbody>
       </table>
+        </div>
+      </div>
     </div>
   );
 }

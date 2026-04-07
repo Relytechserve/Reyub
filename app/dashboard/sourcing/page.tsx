@@ -26,6 +26,7 @@ import {
 import { SourcingTable } from "./sourcing-table";
 
 type SearchParams = {
+  q?: string;
   min?: string;
   highOnly?: string;
   maxCapital?: string;
@@ -35,6 +36,8 @@ type SearchParams = {
   highPotential?: string;
   sort?: string;
   limit?: string;
+  page?: string;
+  pageSize?: string;
 };
 
 type RawSearchParams = Record<string, string | string[] | undefined>;
@@ -58,6 +61,7 @@ function normalizeSourcingSearchParams(raw: RawSearchParams): SearchParams {
     return v != null && v.trim() !== "" ? v : undefined;
   };
   return {
+    q: pick("q"),
     min: pick("min"),
     highOnly: pick("highOnly"),
     maxCapital: pick("maxCapital"),
@@ -67,6 +71,8 @@ function normalizeSourcingSearchParams(raw: RawSearchParams): SearchParams {
     highPotential: pick("highPotential"),
     sort: pick("sort"),
     limit: pick("limit"),
+    page: pick("page"),
+    pageSize: pick("pageSize"),
   };
 }
 
@@ -83,8 +89,14 @@ function buildBuyingModeHref(
   mode: "sniper" | "scale" | "cashLight"
 ): string {
   const params = new URLSearchParams();
+  if (sp.q != null && sp.q.trim() !== "") {
+    params.set("q", sp.q);
+  }
   if (sp.limit != null && sp.limit.trim() !== "") {
     params.set("limit", sp.limit);
+  }
+  if (sp.pageSize != null && sp.pageSize.trim() !== "") {
+    params.set("pageSize", sp.pageSize);
   }
   if (sp.showRejected === "1" || sp.showRejected === "true") {
     params.set("showRejected", "1");
@@ -109,8 +121,14 @@ function buildBuyingModeHref(
 
 function buildResetFiltersHref(sp: SearchParams): string {
   const params = new URLSearchParams();
+  if (sp.q != null && sp.q.trim() !== "") {
+    params.set("q", sp.q);
+  }
   if (sp.limit != null && sp.limit.trim() !== "") {
     params.set("limit", sp.limit);
+  }
+  if (sp.pageSize != null && sp.pageSize.trim() !== "") {
+    params.set("pageSize", sp.pageSize);
   }
   if (sp.showRejected === "1" || sp.showRejected === "true") {
     params.set("showRejected", "1");
@@ -276,6 +294,25 @@ function parseFxEurToGbp(raw: unknown): number {
   return DEFAULT_EUR_TO_GBP;
 }
 
+function pageHref(
+  base: Record<string, string>,
+  nextPage: number
+): string {
+  const params = new URLSearchParams(base);
+  params.set("page", String(Math.max(1, nextPage)));
+  return `/dashboard/sourcing?${params.toString()}`;
+}
+
+function paginationWindow(currentPage: number, totalPages: number): number[] {
+  const pages = new Set<number>([1, totalPages, currentPage]);
+  for (let i = currentPage - 2; i <= currentPage + 2; i += 1) {
+    if (i >= 1 && i <= totalPages) {
+      pages.add(i);
+    }
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+
 export default async function SourcingPage({
   searchParams,
 }: {
@@ -287,6 +324,7 @@ export default async function SourcingPage({
   }
 
   const sp = normalizeSourcingSearchParams(await searchParams);
+  const query = (sp.q ?? "").trim().toLowerCase();
   const minMarginPct = Number.parseFloat(sp.min ?? "0");
   const minM = Number.isFinite(minMarginPct) ? minMarginPct : 0;
   const maxCapitalRaw = Number.parseFloat(sp.maxCapital ?? "");
@@ -307,6 +345,12 @@ export default async function SourcingPage({
       ? minMovMarginRaw
       : 0;
   const sortBy = sp.sort ?? "profit_line_desc";
+  const pageRaw = Number.parseInt(sp.page ?? "1", 10);
+  const currentPage = Number.isFinite(pageRaw) ? Math.max(1, pageRaw) : 1;
+  const pageSizeRaw = Number.parseInt(sp.pageSize ?? "30", 10);
+  const pageSize = Number.isFinite(pageSizeRaw)
+    ? Math.min(100, Math.max(20, pageSizeRaw))
+    : 30;
   const limitRaw = Number.parseInt(sp.limit ?? "2000", 10);
   const rowLimit = Number.isFinite(limitRaw)
     ? Math.min(SOURCING_OPPORTUNITIES_MAX_LIMIT, Math.max(100, limitRaw))
@@ -414,6 +458,19 @@ export default async function SourcingPage({
   });
 
   const filtered = enriched.filter((r) => {
+    if (query.length > 0) {
+      const hay = [
+        r.asin,
+        r.amazonTitle ?? "",
+        r.qogitaId,
+        r.qogitaTitle,
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!hay.includes(query)) {
+        return false;
+      }
+    }
     if (highOnly && r.matchConfidence !== "high") {
       return false;
     }
@@ -518,6 +575,7 @@ export default async function SourcingPage({
     const next = nextSortKeyForColumn(sortBy, column);
     const params = new URLSearchParams(cleanSearchParams(sp));
     params.set("sort", next);
+    params.delete("page");
     return `/dashboard/sourcing?${params.toString()}`;
   };
 
@@ -548,6 +606,14 @@ export default async function SourcingPage({
       .filter((v): v is number => v != null && Number.isFinite(v))
   );
   const best = sorted[0] ?? null;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const pageRows = sorted.slice(pageStart, pageStart + pageSize);
+  const fromRow = sorted.length === 0 ? 0 : pageStart + 1;
+  const toRow = pageStart + pageRows.length;
+  const baseQueryForPage = cleanSearchParams(sp);
+  const pageNumbers = paginationWindow(safePage, totalPages);
 
   return (
     <div className="mx-auto flex min-h-[80vh] w-full max-w-7xl flex-col gap-8 px-4 py-12">
@@ -587,119 +653,6 @@ export default async function SourcingPage({
         </p>
       </header>
 
-      <section className="flex flex-wrap items-center gap-4 text-sm">
-        <form className="flex flex-wrap items-center gap-2" method="get">
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Min margin %
-            <input
-              type="number"
-              name="min"
-              step="0.5"
-              min="0"
-              defaultValue={minM > 0 ? String(minM) : ""}
-              placeholder="0"
-              className="ml-2 w-20 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            />
-          </label>
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Max capital per SKU (£)
-            <input
-              type="number"
-              name="maxCapital"
-              step="0.01"
-              min="0"
-              defaultValue={maxCapitalPerSku != null ? String(maxCapitalPerSku) : ""}
-              placeholder="No cap"
-              className="ml-2 w-28 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            />
-          </label>
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Min profit £ per line
-            <input
-              type="number"
-              name="minLineProfit"
-              step="0.01"
-              min="0"
-              defaultValue={minProfitPerLine > 0 ? String(minProfitPerLine) : ""}
-              placeholder="0"
-              className="ml-2 w-24 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            />
-          </label>
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Min MoV margin %
-            <input
-              type="number"
-              name="minMovMargin"
-              step="0.1"
-              min="0"
-              defaultValue={minMovMarginPct > 0 ? String(minMovMarginPct) : ""}
-              placeholder="0"
-              className="ml-2 w-24 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            />
-          </label>
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Sort
-            <select
-              name="sort"
-              defaultValue={sortBy}
-              className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            >
-              <option value="profit_line_desc">Profit / line (high → low)</option>
-              <option value="profit_line_asc">Profit / line (low → high)</option>
-              <option value="profit_unit_desc">Profit / unit (high → low)</option>
-              <option value="profit_unit_asc">Profit / unit (low → high)</option>
-              <option value="margin_desc">Margin % (high → low)</option>
-              <option value="margin_asc">Margin % (low → high)</option>
-              <option value="mov_margin_desc">MoV margin % (high → low)</option>
-              <option value="mov_margin_asc">MoV margin % (low → high)</option>
-              <option value="potential_desc">Potential (high → low)</option>
-              <option value="potential_asc">Potential (low → high)</option>
-              <option value="capital_asc">Capital (low → high)</option>
-              <option value="capital_desc">Capital (high → low)</option>
-            </select>
-          </label>
-          <label className="text-zinc-600 dark:text-zinc-400">
-            Rows
-            <input
-              type="number"
-              name="limit"
-              step="100"
-              min="100"
-              max={String(SOURCING_OPPORTUNITIES_MAX_LIMIT)}
-              defaultValue={String(rowLimit)}
-              className="ml-2 w-24 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
-            <input type="checkbox" name="highOnly" value="1" defaultChecked={highOnly} />
-            GTIN matches only (hide title similarity)
-          </label>
-          <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
-            <input
-              type="checkbox"
-              name="highPotential"
-              value="1"
-              defaultChecked={highPotentialOnly}
-            />
-            High potential only
-          </label>
-          <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
-            <input
-              type="checkbox"
-              name="showRejected"
-              value="1"
-              defaultChecked={showRejected}
-            />
-            Show rejected matches
-          </label>
-          <button
-            type="submit"
-            className="rounded-lg bg-zinc-900 px-3 py-1.5 font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            Apply
-          </button>
-        </form>
-      </section>
       <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
           Buying modes
@@ -763,7 +716,9 @@ export default async function SourcingPage({
           </div>
         </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Showing {sorted.length} after filters, from {raw.length} loaded (max{" "}
+          Showing {fromRow.toLocaleString()}-{toRow.toLocaleString()} of{" "}
+          {sorted.length.toLocaleString()} filtered opportunities, from{" "}
+          {raw.length.toLocaleString()} loaded (max{" "}
           {rowLimit} per request).{" "}
           <span className="font-medium text-zinc-800 dark:text-zinc-200">
             {joinableTotal.toLocaleString()} joinable matches
@@ -785,12 +740,201 @@ export default async function SourcingPage({
               : "profit n/a"}
           </p>
         ) : null}
+        <section className="sticky top-2 z-20 mb-3 rounded-xl border border-zinc-200 bg-white/95 p-3 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95">
+          <form className="flex flex-wrap items-center gap-2" method="get">
+            <input type="hidden" name="page" value="1" />
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Search
+              <input
+                type="text"
+                name="q"
+                defaultValue={sp.q ?? ""}
+                placeholder="ASIN, Amazon title, Qogita title or ID"
+                className="ml-2 w-64 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Min margin %
+              <input
+                type="number"
+                name="min"
+                step="0.5"
+                min="0"
+                defaultValue={minM > 0 ? String(minM) : ""}
+                placeholder="0"
+                className="ml-2 w-20 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Max capital (£)
+              <input
+                type="number"
+                name="maxCapital"
+                step="0.01"
+                min="0"
+                defaultValue={maxCapitalPerSku != null ? String(maxCapitalPerSku) : ""}
+                placeholder="No cap"
+                className="ml-2 w-24 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Min line £
+              <input
+                type="number"
+                name="minLineProfit"
+                step="0.01"
+                min="0"
+                defaultValue={minProfitPerLine > 0 ? String(minProfitPerLine) : ""}
+                placeholder="0"
+                className="ml-2 w-20 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Min MoV %
+              <input
+                type="number"
+                name="minMovMargin"
+                step="0.1"
+                min="0"
+                defaultValue={minMovMarginPct > 0 ? String(minMovMarginPct) : ""}
+                placeholder="0"
+                className="ml-2 w-20 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Sort
+              <select
+                name="sort"
+                defaultValue={sortBy}
+                className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              >
+                <option value="profit_line_desc">Profit/line ↓</option>
+                <option value="profit_line_asc">Profit/line ↑</option>
+                <option value="profit_unit_desc">Profit/unit ↓</option>
+                <option value="profit_unit_asc">Profit/unit ↑</option>
+                <option value="margin_desc">Margin ↓</option>
+                <option value="margin_asc">Margin ↑</option>
+                <option value="mov_margin_desc">MoV margin ↓</option>
+                <option value="mov_margin_asc">MoV margin ↑</option>
+                <option value="potential_desc">Potential ↓</option>
+                <option value="potential_asc">Potential ↑</option>
+                <option value="capital_asc">Capital ↑</option>
+                <option value="capital_desc">Capital ↓</option>
+              </select>
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Page size
+              <select
+                name="pageSize"
+                defaultValue={String(pageSize)}
+                className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              >
+                <option value="20">20</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Rows
+              <input
+                type="number"
+                name="limit"
+                step="100"
+                min="100"
+                max={String(SOURCING_OPPORTUNITIES_MAX_LIMIT)}
+                defaultValue={String(rowLimit)}
+                className="ml-2 w-20 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <input type="checkbox" name="highOnly" value="1" defaultChecked={highOnly} />
+              GTIN only
+            </label>
+            <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                name="highPotential"
+                value="1"
+                defaultChecked={highPotentialOnly}
+              />
+              High potential
+            </label>
+            <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                name="showRejected"
+                value="1"
+                defaultChecked={showRejected}
+              />
+              Show rejected
+            </label>
+            <button
+              type="submit"
+              className="rounded-lg bg-zinc-900 px-3 py-1.5 font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
+            >
+              Apply filters
+            </button>
+          </form>
+        </section>
         <SourcingTable
-          rows={sorted}
+          rows={pageRows}
           upsertMatchDecisionAction={upsertMatchDecisionAction}
           sortBy={sortBy}
           sortHrefForColumn={sortHrefForColumn}
         />
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p className="text-zinc-600 dark:text-zinc-400">
+            Page {safePage} of {totalPages}
+          </p>
+          <div className="flex items-center gap-2">
+            {safePage > 1 ? (
+              <Link
+                href={pageHref(baseQueryForPage, 1)}
+                className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                First
+              </Link>
+            ) : null}
+            {safePage > 1 ? (
+              <Link
+                href={pageHref(baseQueryForPage, safePage - 1)}
+                className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Previous
+              </Link>
+            ) : null}
+            {pageNumbers.map((p) => (
+              <Link
+                key={p}
+                href={pageHref(baseQueryForPage, p)}
+                className={
+                  p === safePage
+                    ? "rounded border border-zinc-900 bg-zinc-900 px-2 py-1 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                    : "rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                }
+              >
+                {p}
+              </Link>
+            ))}
+            {safePage < totalPages ? (
+              <Link
+                href={pageHref(baseQueryForPage, safePage + 1)}
+                className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Next
+              </Link>
+            ) : null}
+            {safePage < totalPages ? (
+              <Link
+                href={pageHref(baseQueryForPage, totalPages)}
+                className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Last
+              </Link>
+            ) : null}
+          </div>
+        </div>
       </section>
     </div>
   );
