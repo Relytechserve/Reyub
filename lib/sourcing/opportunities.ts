@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -9,6 +9,9 @@ import {
 } from "@/db/schema";
 import { KEEPA_DOMAIN_UK } from "@/lib/keepa/product";
 import { shouldHideRejectedByDefault } from "@/lib/sourcing/match-decision-gating";
+
+/** Max rows the sourcing page may load in one request (UI + query cap). */
+export const SOURCING_OPPORTUNITIES_MAX_LIMIT = 5000;
 
 export type SourcingOpportunityRow = {
   productMatchId: string;
@@ -24,6 +27,7 @@ export type SourcingOpportunityRow = {
   keepaCapturedAt: Date;
   qogitaId: string;
   qogitaTitle: string;
+  qogitaProductUrl: string | null;
   qogitaEan: string | null;
   buyUnitPrice: string | null;
   currency: string;
@@ -35,6 +39,35 @@ export type SourcingOpportunityRow = {
   decision: "approve" | "reject" | null;
   decisionNotes: string | null;
 };
+
+/**
+ * Rows that can render on the sourcing table: same inner joins as
+ * {@link listSourcingOpportunities} (excludes orphaned matches with no UK Keepa row).
+ */
+export async function countJoinableSourcingOpportunities(): Promise<number> {
+  const db = getDb();
+  const [row] = await db
+    .select({ c: sql<number>`count(*)::int` })
+    .from(productMatches)
+    .innerJoin(
+      keepaCatalogItems,
+      and(
+        eq(keepaCatalogItems.asin, productMatches.externalId),
+        eq(keepaCatalogItems.domainId, KEEPA_DOMAIN_UK)
+      )
+    )
+    .innerJoin(
+      qogitaProducts,
+      eq(qogitaProducts.id, productMatches.qogitaProductId)
+    )
+    .where(
+      and(
+        eq(productMatches.channel, "amazon_uk"),
+        isNotNull(productMatches.qogitaProductId)
+      )
+    );
+  return row?.c ?? 0;
+}
 
 /**
  * Sourcing portal: persisted Amazon ↔ Qogita links with Keepa demand metrics.
@@ -86,7 +119,9 @@ export async function listSourcingOpportunities(
         )
       )
       .orderBy(desc(keepaCatalogItems.capturedAt))
-      .limit(Math.min(500, Math.max(1, limit)));
+      .limit(
+        Math.min(SOURCING_OPPORTUNITIES_MAX_LIMIT, Math.max(1, limit))
+      );
     rows = primaryRows;
   } catch (e) {
     // Temporary compatibility fallback when DB migration for product_match_decisions is missing.
@@ -118,7 +153,9 @@ export async function listSourcingOpportunities(
         )
       )
       .orderBy(desc(keepaCatalogItems.capturedAt))
-      .limit(Math.min(500, Math.max(1, limit)));
+      .limit(
+        Math.min(SOURCING_OPPORTUNITIES_MAX_LIMIT, Math.max(1, limit))
+      );
     rows = fallbackRows.map((r) => ({ ...r, d: null }));
   }
 
@@ -132,6 +169,14 @@ export async function listSourcingOpportunities(
         : [];
       const qFlags = q.flags as Record<string, unknown> | null | undefined;
       const priceIncShipping = qFlags?.priceIncShipping === true;
+      const fromFlags =
+        qFlags && typeof qFlags.productLink === "string"
+          ? qFlags.productLink.trim()
+          : "";
+      const qogitaProductUrl =
+        fromFlags.length > 0
+          ? fromFlags
+          : `https://www.qogita.com/search?q=${encodeURIComponent(q.qogitaId)}`;
       return {
         productMatchId: pm.id,
         matchConfidence: pm.confidence,
@@ -152,6 +197,7 @@ export async function listSourcingOpportunities(
         keepaCapturedAt: k.capturedAt,
         qogitaId: q.qogitaId,
         qogitaTitle: q.title,
+        qogitaProductUrl,
         qogitaEan: q.ean,
         buyUnitPrice: q.buyUnitPrice,
         currency: q.currency,

@@ -1,5 +1,10 @@
 import Link from "next/link";
 import type { SourcingOpportunityRow } from "@/lib/sourcing/opportunities";
+import {
+  isSortActiveForColumn,
+  sortDirectionGlyph,
+  type SourcingSortColumn,
+} from "@/lib/sourcing/sourcing-table-sort";
 
 type Row = SourcingOpportunityRow & {
   estimatedMarginPct: number | null;
@@ -8,6 +13,11 @@ type Row = SourcingOpportunityRow & {
   estimatedProfitPerLineGbp: number | null;
   movMarginPct: number | null;
   potential: "High" | "Medium" | "Low";
+  potentialBreakdown: {
+    velocityPct: number;
+    rankPct: number;
+    compositePct: number;
+  };
 };
 
 function showGbpIncShippingNote(
@@ -30,33 +40,70 @@ function matchMethodLabel(tags: string[]): string {
   return tags[0] ?? "Linked";
 }
 
+function rowDecisionSignal(row: Row): {
+  label: string;
+  tone: "buy" | "watch" | "avoid";
+} {
+  const margin = row.estimatedMarginPct ?? -999;
+  const line = row.estimatedProfitPerLineGbp ?? -999;
+  if (
+    row.matchConfidence === "high" &&
+    row.potential === "High" &&
+    margin >= 10 &&
+    line >= 5
+  ) {
+    return { label: "Strong buy signal", tone: "buy" };
+  }
+  if (row.matchConfidence === "high" && row.potential !== "Low" && margin >= 5) {
+    return { label: "Watch", tone: "watch" };
+  }
+  return { label: "Avoid", tone: "avoid" };
+}
+
 export function SourcingTable({
   rows,
   upsertMatchDecisionAction,
   sortBy,
-  searchState,
+  sortHrefForColumn,
 }: {
   rows: Row[];
   upsertMatchDecisionAction: (formData: FormData) => Promise<void>;
   sortBy: string;
-  searchState: Record<string, string>;
+  sortHrefForColumn: (column: SourcingSortColumn) => string;
 }) {
-  const sortHref = (nextSort: string) => {
-    const params = new URLSearchParams(searchState);
-    params.set("sort", nextSort);
-    return `/dashboard/sourcing?${params.toString()}`;
-  };
+  const helpHref = (anchor: string) => `/dashboard/docs#${anchor}`;
+
+  const helpLink = (anchor: string, label: string) => (
+    <Link
+      href={helpHref(anchor)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-300 text-[10px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+      title={label}
+      aria-label={label}
+    >
+      ?
+    </Link>
+  );
+
+  const headerWithHelp = (label: string, anchor: string, title: string) => (
+    <span className="inline-flex items-center gap-1">
+      <span>{label}</span>
+      {helpLink(anchor, title)}
+    </span>
+  );
 
   const sortableHeader = (
     label: string,
-    key: string,
+    column: SourcingSortColumn,
     title: string
   ) => {
-    const active = sortBy === key;
+    const active = isSortActiveForColumn(sortBy, column);
+    const glyph = sortDirectionGlyph(sortBy, column);
     return (
       <Link
-        href={sortHref(key)}
-        title={title}
+        href={sortHrefForColumn(column)}
+        title={`${title}. Click again to reverse order.`}
         className={
           active
             ? "inline-flex items-center gap-1 rounded bg-zinc-200 px-2 py-1 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-50"
@@ -64,7 +111,7 @@ export function SourcingTable({
         }
       >
         <span>{label}</span>
-        <span className="text-[10px]">{active ? "▼" : "↕"}</span>
+        <span className="text-[10px] tabular-nums">{glyph}</span>
       </Link>
     );
   };
@@ -96,57 +143,116 @@ export function SourcingTable({
               Amazon
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Sell ref £
-            </th>
-            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Demand
-            </th>
-            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Units/Pack
-            </th>
-            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              Qogita buy
-            </th>
-            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "Est. margin",
-                "margin_desc",
-                "Sort by estimated margin percentage (descending)"
+              {headerWithHelp(
+                "Sell ref £",
+                "sell-reference",
+                "Open docs: sell reference price formula"
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "Est. profit / unit",
-                "profit_unit_desc",
-                "Sort by profit per unit (descending)"
+              {headerWithHelp(
+                "Demand",
+                "demand-potential",
+                "Open docs: BSR, drops, and potential model"
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "Capital required (£)",
-                "capital_asc",
-                "Sort by lowest capital required first"
+              {headerWithHelp(
+                "Units/Pack",
+                "units-per-pack",
+                "Open docs: units per pack explanation"
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "Profit per line (£)",
-                "profit_line_desc",
-                "Sort by profit per line (descending)"
+              {headerWithHelp(
+                "Qogita buy",
+                "qogita-buy",
+                "Open docs: Qogita buy-side parameters"
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "MoV margin",
-                "mov_margin_desc",
-                "Sort by margin versus minimum order value (descending)"
-              )}
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "Est. margin",
+                  "margin",
+                  "Sort by estimated margin percentage"
+                )}
+                {helpLink(
+                  "estimated-margin",
+                  "Open docs: estimated margin formula"
+                )}
+              </span>
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
-              {sortableHeader(
-                "Match / Potential",
-                "potential_desc",
-                "Sort by sales potential recommendation"
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "Est. profit / unit",
+                  "profit_unit",
+                  "Sort by profit per unit"
+                )}
+                {helpLink(
+                  "profit-per-unit",
+                  "Open docs: estimated profit per unit formula"
+                )}
+              </span>
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "Capital required (£)",
+                  "capital",
+                  "Sort by capital required"
+                )}
+                {helpLink(
+                  "capital-required",
+                  "Open docs: capital required calculation"
+                )}
+              </span>
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "Profit per line (£)",
+                  "profit_line",
+                  "Sort by profit per line"
+                )}
+                {helpLink(
+                  "profit-per-line",
+                  "Open docs: profit per line formula"
+                )}
+              </span>
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "MoV margin",
+                  "mov_margin",
+                  "Sort by margin versus minimum order value"
+                )}
+                {helpLink(
+                  "mov-margin",
+                  "Open docs: MoV margin formula"
+                )}
+              </span>
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              <span className="inline-flex items-center gap-1">
+                {sortableHeader(
+                  "Match / Potential",
+                  "potential",
+                  "Sort by sales potential"
+                )}
+                {helpLink(
+                  "match-confidence",
+                  "Open docs: match confidence and potential explanation"
+                )}
+              </span>
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              {headerWithHelp(
+                "Decision",
+                "decision-signals",
+                "Open docs: Strong buy/Watch/Avoid logic"
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
@@ -194,30 +300,70 @@ export function SourcingTable({
                   Drops 30d {m.salesRankDrops30?.toLocaleString() ?? "—"}
                 </div>
                 <div className="mt-1">
-                  <span
-                    className={
-                      m.potential === "High"
-                        ? "inline-block rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100"
-                        : m.potential === "Medium"
-                          ? "inline-block rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
-                          : "inline-block rounded bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
-                    }
-                    title="Potential is inferred from 30d sales-rank drops + current BSR."
-                  >
-                    {m.potential} potential
-                  </span>
+                  {(() => {
+                    const b = m.potentialBreakdown;
+                    const breakdownTitle = `Potential breakdown | Velocity: ${b.velocityPct}% | Rank: ${b.rankPct}% | Composite: ${b.compositePct}%`;
+                    return (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1">
+                          <span
+                            className={
+                              m.potential === "High"
+                                ? "inline-block rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100"
+                                : m.potential === "Medium"
+                                  ? "inline-block rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                                  : "inline-block rounded bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200"
+                            }
+                            title={breakdownTitle}
+                          >
+                            {m.potential} potential
+                          </span>
+                          <span
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-300 text-[10px] text-zinc-600 dark:border-zinc-600 dark:text-zinc-300"
+                            title={breakdownTitle}
+                            aria-label="Potential breakdown"
+                          >
+                            i
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 text-[10px]">
+                          <span
+                            className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                            title="Velocity signal from Keepa sales-rank drops over 30 days"
+                          >
+                            V {b.velocityPct}%
+                          </span>
+                          <span
+                            className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                            title="Rank strength signal from Keepa BSR (lower BSR = stronger)"
+                          >
+                            R {b.rankPct}%
+                          </span>
+                          <span
+                            className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                            title="Composite demand score used for potential tiering"
+                          >
+                            C {b.compositePct}%
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </td>
               <td className="px-3 py-2 text-zinc-700 dark:text-zinc-300">
                 {m.unitsPerPack != null ? m.unitsPerPack : 1}
               </td>
               <td className="max-w-[220px] px-3 py-2">
-                <div
-                  className="line-clamp-2 text-zinc-800 dark:text-zinc-200"
+                <a
+                  href={m.qogitaProductUrl ?? `https://www.qogita.com/search?q=${encodeURIComponent(m.qogitaId)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="line-clamp-2 text-zinc-800 underline-offset-2 hover:underline dark:text-zinc-200"
                   title={m.qogitaTitle}
                 >
                   {m.qogitaTitle}
-                </div>
+                </a>
                 <div className="mt-1 font-mono text-xs text-zinc-500">
                   EAN {m.qogitaEan ?? "—"}
                 </div>
@@ -339,6 +485,25 @@ export function SourcingTable({
                     Review before ordering — not GTIN-verified.
                   </p>
                 ) : null}
+              </td>
+              <td className="px-3 py-2 align-top">
+                {(() => {
+                  const signal = rowDecisionSignal(m);
+                  const cls =
+                    signal.tone === "buy"
+                      ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100"
+                      : signal.tone === "watch"
+                        ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
+                        : "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200";
+                  return (
+                    <span
+                      className={`inline-block rounded px-2 py-1 text-[10px] font-semibold uppercase ${cls}`}
+                      title="ReyubPM heuristic: confidence, potential, margin and profit/line."
+                    >
+                      {signal.label}
+                    </span>
+                  );
+                })()}
               </td>
               <td className="min-w-[220px] px-3 py-2 align-top">
                 <form action={upsertMatchDecisionAction} className="space-y-1">

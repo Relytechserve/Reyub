@@ -17,6 +17,8 @@
     "db:studio": "drizzle-kit studio",
     "qogita:auth": "tsx scripts/test-qogita-auth.ts",
     "sync:pipeline": "tsx scripts/run-pipeline-sync.ts",
+    "seed:keepa:eans": "tsx scripts/seed-keepa-from-qogita-eans.ts",
+    "fill:target": "tsx scripts/fill-opportunities-target.ts",
     "import:qogita-excel": "tsx scripts/import-qogita-excel-catalog.ts",
     "import:qogita-excel:dry": "tsx scripts/import-qogita-excel-catalog.ts --dry-run",
     "verify:sourcing": "tsx scripts/verify-sourcing.ts"

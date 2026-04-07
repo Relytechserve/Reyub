@@ -12,8 +12,16 @@ import {
   estimateNetProfitGbpPerUnitFromBuyGbp,
   parseGbpToNumber,
 } from "@/lib/margin/estimate";
-import { listSourcingOpportunities } from "@/lib/sourcing/opportunities";
+import {
+  SOURCING_OPPORTUNITIES_MAX_LIMIT,
+  countJoinableSourcingOpportunities,
+  listSourcingOpportunities,
+} from "@/lib/sourcing/opportunities";
 import { upsertMatchDecisionAction } from "@/app/actions/match-decisions";
+import {
+  nextSortKeyForColumn,
+  type SourcingSortColumn,
+} from "@/lib/sourcing/sourcing-table-sort";
 
 import { SourcingTable } from "./sourcing-table";
 
@@ -26,21 +34,165 @@ type SearchParams = {
   minMovMargin?: string;
   highPotential?: string;
   sort?: string;
+  limit?: string;
 };
 
-function salesPotential(
-  salesRankDrops30: number | null,
-  salesRank: number | null
-): "High" | "Medium" | "Low" {
-  const drops = salesRankDrops30 ?? 0;
-  const rank = salesRank ?? 9_999_999;
-  if (drops >= 80 && rank <= 30_000) {
-    return "High";
+type RawSearchParams = Record<string, string | string[] | undefined>;
+
+function firstQueryValue(
+  v: string | string[] | undefined
+): string | undefined {
+  if (v == null) {
+    return undefined;
   }
-  if (drops >= 30 && rank <= 100_000) {
-    return "Medium";
+  if (Array.isArray(v)) {
+    return v[0];
   }
-  return "Low";
+  return v;
+}
+
+/** Next.js may pass `string[]` for repeated keys — normalize before reading filters. */
+function normalizeSourcingSearchParams(raw: RawSearchParams): SearchParams {
+  const pick = (key: keyof SearchParams): string | undefined => {
+    const v = firstQueryValue(raw[key]);
+    return v != null && v.trim() !== "" ? v : undefined;
+  };
+  return {
+    min: pick("min"),
+    highOnly: pick("highOnly"),
+    maxCapital: pick("maxCapital"),
+    minLineProfit: pick("minLineProfit"),
+    showRejected: pick("showRejected"),
+    minMovMargin: pick("minMovMargin"),
+    highPotential: pick("highPotential"),
+    sort: pick("sort"),
+    limit: pick("limit"),
+  };
+}
+
+function paramEmpty(v: string | undefined): boolean {
+  return v == null || v.trim() === "";
+}
+
+/**
+ * Buying-mode chips use preset URLs (not merged with prior filters) so e.g. Scale
+ * does not keep Sniper’s `highOnly` / `highPotential` flags.
+ */
+function buildBuyingModeHref(
+  sp: SearchParams,
+  mode: "sniper" | "scale" | "cashLight"
+): string {
+  const params = new URLSearchParams();
+  if (sp.limit != null && sp.limit.trim() !== "") {
+    params.set("limit", sp.limit);
+  }
+  if (sp.showRejected === "1" || sp.showRejected === "true") {
+    params.set("showRejected", "1");
+  }
+  if (mode === "sniper") {
+    params.set("highPotential", "1");
+    params.set("highOnly", "1");
+    params.set("sort", "potential_desc");
+    params.set("min", "10");
+    params.set("minLineProfit", "5");
+  } else if (mode === "scale") {
+    params.set("minMovMargin", "3");
+    params.set("sort", "mov_margin_desc");
+    params.set("minLineProfit", "3");
+  } else {
+    params.set("maxCapital", "35");
+    params.set("minLineProfit", "2");
+    params.set("sort", "capital_asc");
+  }
+  return `/dashboard/sourcing?${params.toString()}`;
+}
+
+function buildResetFiltersHref(sp: SearchParams): string {
+  const params = new URLSearchParams();
+  if (sp.limit != null && sp.limit.trim() !== "") {
+    params.set("limit", sp.limit);
+  }
+  if (sp.showRejected === "1" || sp.showRejected === "true") {
+    params.set("showRejected", "1");
+  }
+  const q = params.toString();
+  return q.length > 0 ? `/dashboard/sourcing?${q}` : "/dashboard/sourcing";
+}
+
+function activeBuyingMode(
+  sp: SearchParams
+): "sniper" | "scale" | "cashLight" | null {
+  const hp = sp.highPotential === "1" || sp.highPotential === "true";
+  const ho = sp.highOnly === "1" || sp.highOnly === "true";
+  const min = Number.parseFloat(sp.min ?? "");
+  const line = Number.parseFloat(sp.minLineProfit ?? "");
+  const mov = Number.parseFloat(sp.minMovMargin ?? "");
+  const cap = Number.parseFloat(sp.maxCapital ?? "");
+
+  const sniper =
+    hp &&
+    ho &&
+    sp.sort === "potential_desc" &&
+    Number.isFinite(min) &&
+    min === 10 &&
+    Number.isFinite(line) &&
+    line === 5 &&
+    paramEmpty(sp.minMovMargin) &&
+    paramEmpty(sp.maxCapital);
+  if (sniper) {
+    return "sniper";
+  }
+
+  const scale =
+    !hp &&
+    !ho &&
+    sp.sort === "mov_margin_desc" &&
+    Number.isFinite(mov) &&
+    mov === 3 &&
+    Number.isFinite(line) &&
+    line === 3 &&
+    paramEmpty(sp.min) &&
+    paramEmpty(sp.maxCapital);
+  if (scale) {
+    return "scale";
+  }
+
+  const cashLight =
+    !hp &&
+    !ho &&
+    sp.sort === "capital_asc" &&
+    Number.isFinite(cap) &&
+    cap === 35 &&
+    Number.isFinite(line) &&
+    line === 2 &&
+    paramEmpty(sp.min) &&
+    paramEmpty(sp.minMovMargin);
+  if (cashLight) {
+    return "cashLight";
+  }
+
+  return null;
+}
+
+function buyingModeChipClass(
+  modeId: "sniper" | "scale" | "cashLight",
+  active: boolean
+): string {
+  const base =
+    "rounded-full border px-3 py-1 text-xs transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
+  if (!active) {
+    return `${base} border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800`;
+  }
+  switch (modeId) {
+    case "sniper":
+      return `${base} border-2 border-emerald-600 bg-emerald-50 font-semibold text-emerald-900 dark:border-emerald-500 dark:bg-emerald-900/35 dark:text-emerald-100`;
+    case "scale":
+      return `${base} border-2 border-sky-600 bg-sky-50 font-semibold text-sky-900 dark:border-sky-500 dark:bg-sky-900/35 dark:text-sky-100`;
+    case "cashLight":
+      return `${base} border-2 border-amber-600 bg-amber-50 font-semibold text-amber-950 dark:border-amber-500 dark:bg-amber-900/35 dark:text-amber-100`;
+    default:
+      return `${base} border-zinc-300 text-zinc-700`;
+  }
 }
 
 function potentialScore(v: "High" | "Medium" | "Low"): number {
@@ -53,20 +205,37 @@ function potentialScore(v: "High" | "Medium" | "Low"): number {
   return 1;
 }
 
-function buildQuickHref(
-  base: SearchParams,
-  patch: Partial<SearchParams>
-): string {
-  const params = new URLSearchParams();
-  const merged: SearchParams = { ...base, ...patch };
-  const entries = Object.entries(merged) as Array<[keyof SearchParams, string | undefined]>;
-  for (const [k, v] of entries) {
-    if (v != null && String(v).trim() !== "") {
-      params.set(k, String(v));
-    }
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) {
+    return 0;
   }
-  const q = params.toString();
-  return q.length > 0 ? `/dashboard/sourcing?${q}` : "/dashboard/sourcing";
+  const idx = Math.min(
+    sortedAsc.length - 1,
+    Math.max(0, Math.floor((sortedAsc.length - 1) * p))
+  );
+  return sortedAsc[idx] ?? 0;
+}
+
+function velocityPotentialNumeric(
+  salesRankDrops30: number | null,
+  salesRank: number | null
+): { score: number; dropsNorm: number; rankNorm: number } {
+  // Keepa proxies:
+  // - salesRankDrops30: more drops => faster movement
+  // - salesRank (BSR): lower rank => stronger demand
+  const drops = Math.max(0, salesRankDrops30 ?? 0);
+  const rank = Math.max(1, salesRank ?? 1_000_000);
+
+  // Compress extremes to keep score stable.
+  const dropsNorm = Math.min(1, Math.log1p(drops) / Math.log1p(200));
+  const rankNorm = Math.max(0, 1 - Math.log10(rank) / 6); // 1 @ rank~1, 0 @ rank~1,000,000
+
+  // Combined demand score (0..1)
+  return {
+    score: 0.62 * dropsNorm + 0.38 * rankNorm,
+    dropsNorm,
+    rankNorm,
+  };
 }
 
 function cleanSearchParams(
@@ -80,6 +249,13 @@ function cleanSearchParams(
     }
   }
   return out;
+}
+
+function avg(values: number[]): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+  return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
 function parseFxEurToGbp(raw: unknown): number {
@@ -103,14 +279,14 @@ function parseFxEurToGbp(raw: unknown): number {
 export default async function SourcingPage({
   searchParams,
 }: {
-  searchParams: Promise<SearchParams>;
+  searchParams: Promise<RawSearchParams>;
 }) {
   const session = await auth();
   if (!session?.user?.id) {
     redirect("/login?callbackUrl=/dashboard/sourcing");
   }
 
-  const sp = await searchParams;
+  const sp = normalizeSourcingSearchParams(await searchParams);
   const minMarginPct = Number.parseFloat(sp.min ?? "0");
   const minM = Number.isFinite(minMarginPct) ? minMarginPct : 0;
   const maxCapitalRaw = Number.parseFloat(sp.maxCapital ?? "");
@@ -131,6 +307,10 @@ export default async function SourcingPage({
       ? minMovMarginRaw
       : 0;
   const sortBy = sp.sort ?? "profit_line_desc";
+  const limitRaw = Number.parseInt(sp.limit ?? "2000", 10);
+  const rowLimit = Number.isFinite(limitRaw)
+    ? Math.min(SOURCING_OPPORTUNITIES_MAX_LIMIT, Math.max(100, limitRaw))
+    : 2000;
 
   const db = getDb();
   const [settings] = await db
@@ -141,11 +321,14 @@ export default async function SourcingPage({
 
   const eurToGbp = parseFxEurToGbp(settings?.fxManual);
 
-  const raw = await listSourcingOpportunities(250, {
-    showRejected,
-    userId: session.user.id,
-  });
-  const enriched = raw.map((row) => {
+  const [joinableTotal, raw] = await Promise.all([
+    countJoinableSourcingOpportunities(),
+    listSourcingOpportunities(rowLimit, {
+      showRejected,
+      userId: session.user.id,
+    }),
+  ]);
+  const enrichedBase = raw.map((row) => {
     const sell =
       parseGbpToNumber(row.avg30BuyBoxGbp) ??
       parseGbpToNumber(row.amazonBuyBoxGbp);
@@ -185,7 +368,6 @@ export default async function SourcingPage({
       row.minOrderValueOverride && estimatedProfitPerLineGbp != null
         ? ((estimatedProfitPerLineGbp / Math.max(0.01, parseGbpToNumber(row.minOrderValueOverride) ?? 0.01)) * 100)
         : null;
-    const potential = salesPotential(row.salesRankDrops30, row.salesRank);
     return {
       ...row,
       estimatedMarginPct,
@@ -193,7 +375,41 @@ export default async function SourcingPage({
       capitalRequiredGbp,
       estimatedProfitPerLineGbp,
       movMarginPct,
+      ...(() => {
+        const p = velocityPotentialNumeric(row.salesRankDrops30, row.salesRank);
+        return {
+          potentialNumeric: p.score,
+          potentialDropsNorm: p.dropsNorm,
+          potentialRankNorm: p.rankNorm,
+        };
+      })(),
+    };
+  });
+
+  const potentialScores = enrichedBase
+    .map((r) => r.potentialNumeric)
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b);
+  const highCut = percentile(potentialScores, 0.75);
+  const mediumCut = percentile(potentialScores, 0.4);
+
+  const enriched = enrichedBase.map((row) => {
+    const drops = Math.max(0, row.salesRankDrops30 ?? 0);
+    let potential: "High" | "Medium" | "Low" = "Low";
+    // Guard rails to avoid labeling near-zero velocity rows as High.
+    if (row.potentialNumeric >= highCut && drops >= 8) {
+      potential = "High";
+    } else if (row.potentialNumeric >= mediumCut && drops >= 3) {
+      potential = "Medium";
+    }
+    return {
+      ...row,
       potential,
+      potentialBreakdown: {
+        velocityPct: Math.round(row.potentialDropsNorm * 100),
+        rankPct: Math.round(row.potentialRankNorm * 100),
+        compositePct: Math.round(row.potentialNumeric * 100),
+      },
     };
   });
 
@@ -236,8 +452,14 @@ export default async function SourcingPage({
       case "margin_desc": {
         return (b.estimatedMarginPct ?? -1e9) - (a.estimatedMarginPct ?? -1e9);
       }
+      case "margin_asc": {
+        return (a.estimatedMarginPct ?? -1e9) - (b.estimatedMarginPct ?? -1e9);
+      }
       case "mov_margin_desc": {
         return (b.movMarginPct ?? -1e9) - (a.movMarginPct ?? -1e9);
+      }
+      case "mov_margin_asc": {
+        return (a.movMarginPct ?? -1e9) - (b.movMarginPct ?? -1e9);
       }
       case "potential_desc": {
         const pd = potentialScore(b.potential) - potentialScore(a.potential);
@@ -246,8 +468,18 @@ export default async function SourcingPage({
         }
         return (b.salesRankDrops30 ?? -1e9) - (a.salesRankDrops30 ?? -1e9);
       }
+      case "potential_asc": {
+        const pd = potentialScore(a.potential) - potentialScore(b.potential);
+        if (pd !== 0) {
+          return pd;
+        }
+        return (a.salesRankDrops30 ?? -1e9) - (b.salesRankDrops30 ?? -1e9);
+      }
       case "capital_asc": {
         return (a.capitalRequiredGbp ?? 1e9) - (b.capitalRequiredGbp ?? 1e9);
+      }
+      case "capital_desc": {
+        return (b.capitalRequiredGbp ?? 1e9) - (a.capitalRequiredGbp ?? 1e9);
       }
       case "profit_unit_desc": {
         return (
@@ -255,7 +487,24 @@ export default async function SourcingPage({
           (a.estimatedProfitGbpPerUnit ?? -1e9)
         );
       }
-      case "profit_line_desc":
+      case "profit_unit_asc": {
+        return (
+          (a.estimatedProfitGbpPerUnit ?? -1e9) -
+          (b.estimatedProfitGbpPerUnit ?? -1e9)
+        );
+      }
+      case "profit_line_desc": {
+        return (
+          (b.estimatedProfitPerLineGbp ?? -1e9) -
+          (a.estimatedProfitPerLineGbp ?? -1e9)
+        );
+      }
+      case "profit_line_asc": {
+        return (
+          (a.estimatedProfitPerLineGbp ?? -1e9) -
+          (b.estimatedProfitPerLineGbp ?? -1e9)
+        );
+      }
       default: {
         return (
           (b.estimatedProfitPerLineGbp ?? -1e9) -
@@ -264,6 +513,41 @@ export default async function SourcingPage({
       }
     }
   });
+
+  const sortHrefForColumn = (column: SourcingSortColumn) => {
+    const next = nextSortKeyForColumn(sortBy, column);
+    const params = new URLSearchParams(cleanSearchParams(sp));
+    params.set("sort", next);
+    return `/dashboard/sourcing?${params.toString()}`;
+  };
+
+  const buyingMode = activeBuyingMode(sp);
+
+  const readyNow = sorted.filter(
+    (r) =>
+      r.matchConfidence === "high" &&
+      r.potential === "High" &&
+      (r.estimatedMarginPct ?? -1) >= 10 &&
+      (r.estimatedProfitPerLineGbp ?? -1) >= 5
+  );
+  const watchlist = sorted.filter(
+    (r) =>
+      r.matchConfidence === "high" &&
+      r.potential !== "Low" &&
+      (r.estimatedMarginPct ?? -1) >= 5 &&
+      (r.estimatedProfitPerLineGbp ?? -1) >= 2
+  );
+  const avgCapital = avg(
+    sorted
+      .map((r) => r.capitalRequiredGbp)
+      .filter((v): v is number => v != null && Number.isFinite(v))
+  );
+  const avgMargin = avg(
+    sorted
+      .map((r) => r.estimatedMarginPct)
+      .filter((v): v is number => v != null && Number.isFinite(v))
+  );
+  const best = sorted[0] ?? null;
 
   return (
     <div className="mx-auto flex min-h-[80vh] w-full max-w-7xl flex-col gap-8 px-4 py-12">
@@ -275,6 +559,12 @@ export default async function SourcingPage({
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             Sourcing opportunities
           </h1>
+          <Link
+            href="/dashboard/docs"
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            Reyub Docs
+          </Link>
           <Link
             href="/dashboard"
             className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
@@ -288,6 +578,12 @@ export default async function SourcingPage({
           and <strong>30d avg buy box</strong> when present (else current buy
           box). Product spec:{" "}
           <code className="text-xs">docs/SOURCING_INSIGHTS_PRD.md</code>.
+        </p>
+        <p className="max-w-3xl text-sm text-zinc-500 dark:text-zinc-500">
+          New Qogita catalog (Excel): run{" "}
+          <code className="text-xs">npm run import:qogita-excel</code>, then{" "}
+          <strong>Sync Qogita + Keepa</strong> on the dashboard so matches refresh
+          against updated EANs and prices.
         </p>
       </header>
 
@@ -348,13 +644,31 @@ export default async function SourcingPage({
               defaultValue={sortBy}
               className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
             >
-              <option value="profit_line_desc">Profit / line (desc)</option>
-              <option value="profit_unit_desc">Profit / unit (desc)</option>
-              <option value="margin_desc">Margin % (desc)</option>
-              <option value="mov_margin_desc">MoV margin % (desc)</option>
-              <option value="potential_desc">Potential (desc)</option>
-              <option value="capital_asc">Capital required (asc)</option>
+              <option value="profit_line_desc">Profit / line (high → low)</option>
+              <option value="profit_line_asc">Profit / line (low → high)</option>
+              <option value="profit_unit_desc">Profit / unit (high → low)</option>
+              <option value="profit_unit_asc">Profit / unit (low → high)</option>
+              <option value="margin_desc">Margin % (high → low)</option>
+              <option value="margin_asc">Margin % (low → high)</option>
+              <option value="mov_margin_desc">MoV margin % (high → low)</option>
+              <option value="mov_margin_asc">MoV margin % (low → high)</option>
+              <option value="potential_desc">Potential (high → low)</option>
+              <option value="potential_asc">Potential (low → high)</option>
+              <option value="capital_asc">Capital (low → high)</option>
+              <option value="capital_desc">Capital (high → low)</option>
             </select>
+          </label>
+          <label className="text-zinc-600 dark:text-zinc-400">
+            Rows
+            <input
+              type="number"
+              name="limit"
+              step="100"
+              min="100"
+              max={String(SOURCING_OPPORTUNITIES_MAX_LIMIT)}
+              defaultValue={String(rowLimit)}
+              className="ml-2 w-24 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+            />
           </label>
           <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
             <input type="checkbox" name="highOnly" value="1" defaultChecked={highOnly} />
@@ -386,60 +700,96 @@ export default async function SourcingPage({
           </button>
         </form>
       </section>
-      <section className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-zinc-500">Quick chips:</span>
+      <section className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Buying modes
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
         <Link
-          href={buildQuickHref(sp, {
-            highPotential: "1",
-            sort: "potential_desc",
-          })}
-          className="rounded-full border border-zinc-300 px-3 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          href={buildBuyingModeHref(sp, "sniper")}
+          className={buyingModeChipClass("sniper", buyingMode === "sniper")}
+          aria-current={buyingMode === "sniper" ? "page" : undefined}
         >
-          High potential
+          Sniper mode (high confidence + high potential)
         </Link>
         <Link
-          href={buildQuickHref(sp, {
-            minMovMargin: "3",
-            sort: "mov_margin_desc",
-          })}
-          className="rounded-full border border-zinc-300 px-3 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          href={buildBuyingModeHref(sp, "scale")}
+          className={buyingModeChipClass("scale", buyingMode === "scale")}
+          aria-current={buyingMode === "scale" ? "page" : undefined}
         >
-          MoV margin ≥ 3%
+          Scale mode (MoV-efficient)
         </Link>
         <Link
-          href={buildQuickHref(sp, {
-            minLineProfit: "5",
-            sort: "profit_line_desc",
-          })}
-          className="rounded-full border border-zinc-300 px-3 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          href={buildBuyingModeHref(sp, "cashLight")}
+          className={buyingModeChipClass("cashLight", buyingMode === "cashLight")}
+          aria-current={buyingMode === "cashLight" ? "page" : undefined}
         >
-          Profit/line ≥ £5
+          Cash-light mode (fast test buys)
         </Link>
         <Link
-          href={buildQuickHref(sp, {
-            maxCapital: "50",
-            sort: "capital_asc",
-          })}
-          className="rounded-full border border-zinc-300 px-3 py-1 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          href={buildResetFiltersHref(sp)}
+          className="rounded-full border border-zinc-300 px-3 py-1 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
-          Low capital (≤ £50)
+          Reset filters
         </Link>
+        </div>
       </section>
 
       <section>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Ready to buy now</p>
+            <p className="mt-1 text-2xl font-semibold text-emerald-700 dark:text-emerald-300">
+              {readyNow.length}
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Good watchlist</p>
+            <p className="mt-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+              {watchlist.length}
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Avg capital required</p>
+            <p className="mt-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+              {avgCapital != null ? `£${avgCapital.toFixed(2)}` : "—"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Avg estimated margin</p>
+            <p className="mt-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+              {avgMargin != null ? `${avgMargin.toFixed(1)}%` : "—"}
+            </p>
+          </div>
+        </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Showing {sorted.length} of {raw.length} linked SKUs (sorted by
-          estimated £ profit / line, desc).
+          Showing {sorted.length} after filters, from {raw.length} loaded (max{" "}
+          {rowLimit} per request).{" "}
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">
+            {joinableTotal.toLocaleString()} joinable matches
+          </span>{" "}
+          in the database (Amazon UK Keepa row + Qogita link). Increase{" "}
+          <strong>Rows</strong> up to {SOURCING_OPPORTUNITIES_MAX_LIMIT.toLocaleString()}{" "}
+          to load more.
         </p>
         <p className="mt-1 text-xs text-zinc-500">
           Profit per line = estimated profit/unit × units per pack. MoV margin uses
           profit per line against configured min order value (when available).
         </p>
+        {best ? (
+          <p className="mt-1 text-xs text-zinc-500">
+            Current best candidate: <span className="font-mono">{best.asin}</span>{" "}
+            • {best.potential} potential •{" "}
+            {best.estimatedProfitPerLineGbp != null
+              ? `£${best.estimatedProfitPerLineGbp.toFixed(2)} / line`
+              : "profit n/a"}
+          </p>
+        ) : null}
         <SourcingTable
           rows={sorted}
           upsertMatchDecisionAction={upsertMatchDecisionAction}
           sortBy={sortBy}
-          searchState={cleanSearchParams(sp)}
+          sortHrefForColumn={sortHrefForColumn}
         />
       </section>
     </div>
