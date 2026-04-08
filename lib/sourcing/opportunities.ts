@@ -9,6 +9,11 @@ import {
 } from "@/db/schema";
 import { KEEPA_DOMAIN_UK } from "@/lib/keepa/product";
 import { shouldHideRejectedByDefault } from "@/lib/sourcing/match-decision-gating";
+import { buildQogitaProductUrl } from "@/lib/sourcing/qogita-link";
+import {
+  isSuspiciousMatch,
+  scoreBreakdownLabel,
+} from "@/lib/sourcing/review-queue";
 
 /** Max rows the sourcing page may load in one request (UI + query cap). */
 export const SOURCING_OPPORTUNITIES_MAX_LIMIT = 5000;
@@ -38,6 +43,8 @@ export type SourcingOpportunityRow = {
   priceIncShipping: boolean;
   decision: "approve" | "reject" | null;
   decisionNotes: string | null;
+  suspicious: boolean;
+  scoreBreakdown: string;
 };
 
 /**
@@ -79,21 +86,62 @@ export async function listSourcingOpportunities(
   const db = getDb();
   const showRejected = options?.showRejected === true;
   const userId = options.userId;
+  const baseSelect = {
+    pm: {
+      id: productMatches.id,
+      confidence: productMatches.confidence,
+      reasonTags: productMatches.reasonTags,
+      matchScore: productMatches.matchScore,
+    },
+    k: {
+      asin: keepaCatalogItems.asin,
+      title: keepaCatalogItems.title,
+      metrics: keepaCatalogItems.metrics,
+      capturedAt: keepaCatalogItems.capturedAt,
+    },
+    q: {
+      qogitaId: qogitaProducts.qogitaId,
+      ean: qogitaProducts.ean,
+      title: qogitaProducts.title,
+      buyUnitPrice: qogitaProducts.buyUnitPrice,
+      currency: qogitaProducts.currency,
+      stockUnits: qogitaProducts.stockUnits,
+      unitsPerPack: qogitaProducts.unitsPerPack,
+      minOrderValueOverride: qogitaProducts.minOrderValueOverride,
+      flags: qogitaProducts.flags,
+    },
+  };
   let rows: Array<{
-    pm: typeof productMatches.$inferSelect;
-    k: typeof keepaCatalogItems.$inferSelect;
-    q: typeof qogitaProducts.$inferSelect;
-    d:
-      | typeof productMatchDecisions.$inferSelect
-      | null;
+    pm: {
+      id: string;
+      confidence: "high" | "medium";
+      reasonTags: string[];
+      matchScore: string | null;
+    };
+    k: {
+      asin: string;
+      title: string;
+      metrics: unknown;
+      capturedAt: Date;
+    };
+    q: {
+      qogitaId: string;
+      ean: string | null;
+      title: string;
+      buyUnitPrice: string | null;
+      currency: string;
+      stockUnits: number | null;
+      unitsPerPack: number | null;
+      minOrderValueOverride: string | null;
+      flags: unknown;
+    };
+    d: { decision: "approve" | "reject"; notes: string | null } | null;
   }> = [];
 
   try {
     const primaryRows = await db
       .select({
-        pm: productMatches,
-        k: keepaCatalogItems,
-        q: qogitaProducts,
+        ...baseSelect,
         d: productMatchDecisions,
       })
       .from(productMatches)
@@ -133,9 +181,7 @@ export async function listSourcingOpportunities(
     }
     const fallbackRows = await db
       .select({
-        pm: productMatches,
-        k: keepaCatalogItems,
-        q: qogitaProducts,
+        ...baseSelect,
       })
       .from(productMatches)
       .innerJoin(
@@ -169,14 +215,11 @@ export async function listSourcingOpportunities(
         : [];
       const qFlags = q.flags as Record<string, unknown> | null | undefined;
       const priceIncShipping = qFlags?.priceIncShipping === true;
-      const fromFlags =
-        qFlags && typeof qFlags.productLink === "string"
-          ? qFlags.productLink.trim()
-          : "";
-      const qogitaProductUrl =
-        fromFlags.length > 0
-          ? fromFlags
-          : `https://www.qogita.com/search?q=${encodeURIComponent(q.qogitaId)}`;
+      const qogitaProductUrl = buildQogitaProductUrl({
+        qogitaId: q.qogitaId,
+        ean: q.ean,
+        flags: qFlags,
+      });
       return {
         productMatchId: pm.id,
         matchConfidence: pm.confidence,
@@ -207,6 +250,16 @@ export async function listSourcingOpportunities(
         priceIncShipping,
         decision: d?.decision ?? null,
         decisionNotes: d?.notes ?? null,
+        suspicious: isSuspiciousMatch({
+          confidence: pm.confidence,
+          matchScore: pm.matchScore == null ? null : Number(pm.matchScore),
+          reasonTags: matchReasonTags,
+        }),
+        scoreBreakdown: scoreBreakdownLabel({
+          confidence: pm.confidence,
+          matchScore: pm.matchScore == null ? null : Number(pm.matchScore),
+          reasonTags: matchReasonTags,
+        }),
       };
     });
 }

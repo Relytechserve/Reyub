@@ -43,6 +43,13 @@
       "when": 1775433600000,
       "tag": "0005_match_decisions_per_user",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775516400000,
+      "tag": "0006_image_similarity_signal",
+      "breakpoints": true
     }
   ]
 }

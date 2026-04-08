@@ -87,5 +87,5 @@ export async function fetchBestsellerAsins(
       out.push(a);
     }
   }
-  return out;
+  return countRaw != null ? out.slice(0, countRaw) : out.slice(0, 100);
 }

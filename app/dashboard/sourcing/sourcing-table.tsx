@@ -1,5 +1,10 @@
 import Link from "next/link";
 import type { SourcingOpportunityRow } from "@/lib/sourcing/opportunities";
+import { isValidQogitaUrl } from "@/lib/sourcing/qogita-link";
+import {
+  ReviewPendingHint,
+  ReviewSubmitButton,
+} from "./review-form-status";
 import {
   isSortActiveForColumn,
   sortDirectionGlyph,
@@ -258,6 +263,12 @@ export function SourcingTable({
               )}
             </th>
             <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              Score / reasons
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
+              Links
+            </th>
+            <th className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-300">
               Review
             </th>
           </tr>
@@ -357,15 +368,25 @@ export function SourcingTable({
                 {m.unitsPerPack != null ? m.unitsPerPack : 1}
               </td>
               <td className="max-w-[220px] px-3 py-2">
-                <a
-                  href={m.qogitaProductUrl ?? `https://www.qogita.com/search?q=${encodeURIComponent(m.qogitaId)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="line-clamp-2 text-zinc-800 underline-offset-2 hover:underline dark:text-zinc-200"
-                  title={m.qogitaTitle}
-                >
-                  {m.qogitaTitle}
-                </a>
+                {isValidQogitaUrl(m.qogitaProductUrl) ? (
+                  <a
+                    href={m.qogitaProductUrl ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="line-clamp-2 text-zinc-800 underline-offset-2 hover:underline dark:text-zinc-200"
+                    title={m.qogitaTitle}
+                  >
+                    {m.qogitaTitle}
+                  </a>
+                ) : (
+                  <span
+                    className="line-clamp-2 cursor-not-allowed text-zinc-400"
+                    title="No link available"
+                    aria-disabled="true"
+                  >
+                    No link available
+                  </span>
+                )}
                 <div className="mt-1 font-mono text-xs text-zinc-500">
                   EAN {m.qogitaEan ?? "—"}
                 </div>
@@ -507,6 +528,36 @@ export function SourcingTable({
                   );
                 })()}
               </td>
+              <td className="max-w-[260px] px-3 py-2 align-top text-xs text-zinc-600 dark:text-zinc-300">
+                {m.suspicious ? (
+                  <p className="mb-1 inline-block rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
+                    Suspicious
+                  </p>
+                ) : null}
+                <p>{m.scoreBreakdown}</p>
+              </td>
+              <td className="whitespace-nowrap px-3 py-2 align-top text-xs">
+                <div className="flex flex-col gap-1">
+                  <a
+                    href={`https://www.amazon.co.uk/dp/${m.asin}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+                  >
+                    Amazon
+                  </a>
+                  {isValidQogitaUrl(m.qogitaProductUrl) ? (
+                    <a
+                      href={m.qogitaProductUrl ?? undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+                    >
+                      Qogita
+                    </a>
+                  ) : null}
+                </div>
+              </td>
               <td className="min-w-[220px] px-3 py-2 align-top">
                 <form action={upsertMatchDecisionAction} className="space-y-1">
                   <input type="hidden" name="productMatchId" value={m.productMatchId} />
@@ -517,24 +568,60 @@ export function SourcingTable({
                     placeholder="Optional note"
                     className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-950"
                   />
+                  <input
+                    type="text"
+                    name="reasonTags"
+                    placeholder="Reason tags (comma separated)"
+                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-950"
+                  />
                   <div className="flex gap-1">
+                    <input
+                      type="text"
+                      name="remapQogitaId"
+                      placeholder="Remap to Qogita ID"
+                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-950"
+                    />
                     <button
                       type="submit"
-                      name="decision"
-                      value="approve"
-                      className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-600"
+                      name="action"
+                      value="remap"
+                      className="rounded bg-sky-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-sky-600"
                     >
-                      Approve
-                    </button>
-                    <button
-                      type="submit"
-                      name="decision"
-                      value="reject"
-                      className="rounded bg-rose-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-rose-600"
-                    >
-                      Reject
+                      Remap
                     </button>
                   </div>
+                  <div className="flex gap-1">
+                    <input
+                      type="url"
+                      name="qogitaProductUrl"
+                      defaultValue={m.qogitaProductUrl ?? ""}
+                      placeholder="Update Qogita product URL"
+                      className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-950"
+                    />
+                    <button
+                      type="submit"
+                      name="action"
+                      value="update_link"
+                      className="rounded bg-indigo-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-600"
+                    >
+                      Save link
+                    </button>
+                  </div>
+                  <div className="flex gap-1">
+                    <ReviewSubmitButton
+                      decision="approve"
+                      idleLabel="Approve"
+                      pendingLabel="Saving..."
+                      className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-600"
+                    />
+                    <ReviewSubmitButton
+                      decision="reject"
+                      idleLabel="Reject"
+                      pendingLabel="Saving..."
+                      className="rounded bg-rose-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-rose-600"
+                    />
+                  </div>
+                  <ReviewPendingHint />
                 </form>
               </td>
             </tr>

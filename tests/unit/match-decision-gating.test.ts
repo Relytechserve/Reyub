@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isReviewedMatch,
+  allowReadyToBuyByReviewGate,
   shouldHideRejectedByDefault,
   shouldSkipSyncOverwriteForDecision,
 } from "@/lib/sourcing/match-decision-gating";
@@ -52,5 +53,12 @@ describe("match decision gating", () => {
     expect(isReviewedMatch("approve")).toBe(true);
     expect(isReviewedMatch("reject")).toBe(false);
     expect(isReviewedMatch(null)).toBe(false);
+  });
+
+  it("gates ready-to-buy rows when review gate enabled", () => {
+    expect(allowReadyToBuyByReviewGate("approve", true)).toBe(true);
+    expect(allowReadyToBuyByReviewGate("reject", true)).toBe(false);
+    expect(allowReadyToBuyByReviewGate(null, true)).toBe(false);
+    expect(allowReadyToBuyByReviewGate(null, false)).toBe(true);
   });
 });

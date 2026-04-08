@@ -13,6 +13,9 @@ export type SyncRunDiagnosticsStats = {
   /** Breakdown when multi-stage matcher runs (GTIN + fuzzy). */
   matchEanStage?: number;
   matchFuzzyStage?: number;
+  imageCoveragePct?: number;
+  imageCompared?: number;
+  imageInfluenced?: number;
   qogitaOffersPath: string;
   categoryFilterApplied: boolean;
   categoryNote: string;

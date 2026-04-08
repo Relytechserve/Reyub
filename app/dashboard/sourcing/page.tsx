@@ -4,7 +4,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { getDb } from "@/db";
-import { userSettings } from "@/db/schema";
+import { productMatchDecisions, userSettings } from "@/db/schema";
 import {
   DEFAULT_EUR_TO_GBP,
   buyUnitCostGbp,
@@ -22,6 +22,7 @@ import {
   nextSortKeyForColumn,
   type SourcingSortColumn,
 } from "@/lib/sourcing/sourcing-table-sort";
+import { allowReadyToBuyByReviewGate } from "@/lib/sourcing/match-decision-gating";
 
 import { SourcingTable } from "./sourcing-table";
 
@@ -38,6 +39,10 @@ type SearchParams = {
   limit?: string;
   page?: string;
   pageSize?: string;
+  queue?: string;
+  reviewedReadyOnly?: string;
+  decision?: string;
+  reviewStatus?: string;
 };
 
 type RawSearchParams = Record<string, string | string[] | undefined>;
@@ -73,6 +78,10 @@ function normalizeSourcingSearchParams(raw: RawSearchParams): SearchParams {
     limit: pick("limit"),
     page: pick("page"),
     pageSize: pick("pageSize"),
+    queue: pick("queue"),
+    reviewedReadyOnly: pick("reviewedReadyOnly"),
+    decision: pick("decision"),
+    reviewStatus: pick("reviewStatus"),
   };
 }
 
@@ -100,6 +109,12 @@ function buildBuyingModeHref(
   }
   if (sp.showRejected === "1" || sp.showRejected === "true") {
     params.set("showRejected", "1");
+  }
+  if (sp.decision != null && sp.decision.trim() !== "") {
+    params.set("decision", sp.decision);
+  }
+  if (sp.reviewStatus != null && sp.reviewStatus.trim() !== "") {
+    params.set("reviewStatus", sp.reviewStatus);
   }
   if (mode === "sniper") {
     params.set("highPotential", "1");
@@ -132,6 +147,12 @@ function buildResetFiltersHref(sp: SearchParams): string {
   }
   if (sp.showRejected === "1" || sp.showRejected === "true") {
     params.set("showRejected", "1");
+  }
+  if (sp.decision != null && sp.decision.trim() !== "") {
+    params.set("decision", sp.decision);
+  }
+  if (sp.reviewStatus != null && sp.reviewStatus.trim() !== "") {
+    params.set("reviewStatus", sp.reviewStatus);
   }
   const q = params.toString();
   return q.length > 0 ? `/dashboard/sourcing?${q}` : "/dashboard/sourcing";
@@ -221,6 +242,30 @@ function potentialScore(v: "High" | "Medium" | "Low"): number {
     return 2;
   }
   return 1;
+}
+
+function decisionSignal(
+  row: {
+    matchConfidence: "high" | "medium";
+    potential: "High" | "Medium" | "Low";
+    estimatedMarginPct: number | null;
+    estimatedProfitPerLineGbp: number | null;
+  }
+): "strong_buy" | "watch" | "avoid" {
+  const margin = row.estimatedMarginPct ?? -999;
+  const line = row.estimatedProfitPerLineGbp ?? -999;
+  if (
+    row.matchConfidence === "high" &&
+    row.potential === "High" &&
+    margin >= 10 &&
+    line >= 5
+  ) {
+    return "strong_buy";
+  }
+  if (row.matchConfidence === "high" && row.potential !== "Low" && margin >= 5) {
+    return "watch";
+  }
+  return "avoid";
 }
 
 function percentile(sortedAsc: number[], p: number): number {
@@ -336,7 +381,23 @@ export default async function SourcingPage({
       ? minLineProfitRaw
       : 0;
   const highOnly = sp.highOnly === "1" || sp.highOnly === "true";
-  const showRejected = sp.showRejected === "1" || sp.showRejected === "true";
+  const decisionFilterRaw = (sp.decision ?? "all").toLowerCase();
+  const decisionFilter: "all" | "strong_buy" | "watch" | "avoid" =
+    decisionFilterRaw === "strong_buy" ||
+    decisionFilterRaw === "watch" ||
+    decisionFilterRaw === "avoid"
+      ? decisionFilterRaw
+      : "all";
+  const showRejected =
+    sp.showRejected === "1" ||
+    sp.showRejected === "true";
+  const reviewStatusRaw = (sp.reviewStatus ?? "all").toLowerCase();
+  const reviewStatus: "all" | "approved" | "rejected" | "unreviewed" =
+    reviewStatusRaw === "approved" ||
+    reviewStatusRaw === "rejected" ||
+    reviewStatusRaw === "unreviewed"
+      ? reviewStatusRaw
+      : "all";
   const highPotentialOnly =
     sp.highPotential === "1" || sp.highPotential === "true";
   const minMovMarginRaw = Number.parseFloat(sp.minMovMargin ?? "");
@@ -345,6 +406,9 @@ export default async function SourcingPage({
       ? minMovMarginRaw
       : 0;
   const sortBy = sp.sort ?? "profit_line_desc";
+  const suspiciousOnly = (sp.queue ?? "") === "suspicious";
+  const reviewedReadyOnly =
+    sp.reviewedReadyOnly === "1" || sp.reviewedReadyOnly === "true";
   const pageRaw = Number.parseInt(sp.page ?? "1", 10);
   const currentPage = Number.isFinite(pageRaw) ? Math.max(1, pageRaw) : 1;
   const pageSizeRaw = Number.parseInt(sp.pageSize ?? "30", 10);
@@ -365,12 +429,29 @@ export default async function SourcingPage({
 
   const eurToGbp = parseFxEurToGbp(settings?.fxManual);
 
-  const [joinableTotal, raw] = await Promise.all([
+  const [joinableTotal, raw, decisionSummary] = await Promise.all([
     countJoinableSourcingOpportunities(),
     listSourcingOpportunities(rowLimit, {
       showRejected,
       userId: session.user.id,
     }),
+    (async () => {
+      try {
+        const rows = await db
+          .select({ decision: productMatchDecisions.decision })
+          .from(productMatchDecisions)
+          .where(eq(productMatchDecisions.userId, session.user.id));
+        let approved = 0;
+        let rejected = 0;
+        for (const r of rows) {
+          if (r.decision === "approve") approved += 1;
+          if (r.decision === "reject") rejected += 1;
+        }
+        return { approved, rejected };
+      } catch {
+        return { approved: 0, rejected: 0 };
+      }
+    })(),
   ]);
   const enrichedBase = raw.map((row) => {
     const sell =
@@ -501,6 +582,21 @@ export default async function SourcingPage({
         return false;
       }
     }
+    if (suspiciousOnly && !r.suspicious) {
+      return false;
+    }
+    if (decisionFilter !== "all" && decisionSignal(r) !== decisionFilter) {
+      return false;
+    }
+    if (reviewStatus === "approved" && r.decision !== "approve") {
+      return false;
+    }
+    if (reviewStatus === "rejected" && r.decision !== "reject") {
+      return false;
+    }
+    if (reviewStatus === "unreviewed" && r.decision != null) {
+      return false;
+    }
     return true;
   });
 
@@ -584,6 +680,7 @@ export default async function SourcingPage({
   const readyNow = sorted.filter(
     (r) =>
       r.matchConfidence === "high" &&
+      allowReadyToBuyByReviewGate(r.decision, reviewedReadyOnly) &&
       r.potential === "High" &&
       (r.estimatedMarginPct ?? -1) >= 10 &&
       (r.estimatedProfitPerLineGbp ?? -1) >= 5
@@ -606,6 +703,9 @@ export default async function SourcingPage({
       .filter((v): v is number => v != null && Number.isFinite(v))
   );
   const best = sorted[0] ?? null;
+  const suspiciousQueueSize = enriched.filter((r) => r.suspicious).length;
+  const approvedCount = decisionSummary.approved;
+  const rejectedCount = decisionSummary.rejected;
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const safePage = Math.min(currentPage, totalPages);
   const pageStart = (safePage - 1) * pageSize;
@@ -714,6 +814,18 @@ export default async function SourcingPage({
               {avgMargin != null ? `${avgMargin.toFixed(1)}%` : "—"}
             </p>
           </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Suspicious queue size</p>
+            <p className="mt-1 text-2xl font-semibold text-amber-700 dark:text-amber-300">
+              {suspiciousQueueSize}
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-xs text-zinc-500">Review outcomes</p>
+            <p className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              {approvedCount} approved · {rejectedCount} rejected
+            </p>
+          </div>
         </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           Showing {fromRow.toLocaleString()}-{toRow.toLocaleString()} of{" "}
@@ -802,6 +914,32 @@ export default async function SourcingPage({
               />
             </label>
             <label className="text-zinc-600 dark:text-zinc-400">
+              Decision signal
+              <select
+                name="decision"
+                defaultValue={decisionFilter}
+                className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              >
+                <option value="all">All</option>
+                <option value="strong_buy">Strong buy signal</option>
+                <option value="watch">Watch</option>
+                <option value="avoid">Avoid</option>
+              </select>
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
+              Review status
+              <select
+                name="reviewStatus"
+                defaultValue={reviewStatus}
+                className="ml-2 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-600 dark:bg-zinc-950"
+              >
+                <option value="all">All</option>
+                <option value="approved">Approved only</option>
+                <option value="rejected">Rejected only</option>
+                <option value="unreviewed">Unreviewed only</option>
+              </select>
+            </label>
+            <label className="text-zinc-600 dark:text-zinc-400">
               Sort
               <select
                 name="sort"
@@ -868,6 +1006,24 @@ export default async function SourcingPage({
                 defaultChecked={showRejected}
               />
               Show rejected
+            </label>
+            <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                name="queue"
+                value="suspicious"
+                defaultChecked={suspiciousOnly}
+              />
+              Suspicious queue only
+            </label>
+            <label className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                name="reviewedReadyOnly"
+                value="1"
+                defaultChecked={reviewedReadyOnly}
+              />
+              Ready-to-buy requires approved review
             </label>
             <button
               type="submit"

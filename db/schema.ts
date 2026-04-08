@@ -22,6 +22,11 @@ export const matchConfidenceEnum = pgEnum("match_confidence", [
 
 /** Operator review state for a matched Amazon ↔ Qogita link. */
 export const matchDecisionEnum = pgEnum("match_decision", ["approve", "reject"]);
+export const reviewActionEnum = pgEnum("review_action", [
+  "approve",
+  "reject",
+  "remap",
+]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -250,6 +255,8 @@ export const keepaCatalogItems = pgTable(
     bestsellerRank: integer("bestseller_rank"),
     title: text("title").notNull(),
     primaryEan: text("primary_ean"),
+    primaryImageUrl: text("primary_image_url"),
+    imageUrls: jsonb("image_urls").$type<string[]>(),
     metrics: jsonb("metrics").notNull(),
     capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -272,6 +279,8 @@ export const qogitaProducts = pgTable(
     ),
     ean: text("ean"),
     title: text("title").notNull(),
+    primaryImageUrl: text("primary_image_url"),
+    imageUrls: jsonb("image_urls").$type<string[]>(),
     brand: text("brand"),
     categorySlug: text("category_slug"),
     unitsPerPack: integer("units_per_pack"),
@@ -292,8 +301,35 @@ export const qogitaProducts = pgTable(
   },
   (t) => [
     index("qogita_products_ean_idx").on(t.ean),
+    index("qogita_products_primary_image_idx").on(t.primaryImageUrl),
     index("qogita_products_category_idx").on(t.categorySlug),
     index("qogita_products_canonical_idx").on(t.canonicalProductId),
+  ]
+);
+
+export const imageSimilarityCache = pgTable(
+  "image_similarity_cache",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(),
+    sourceImageUrl: text("source_image_url").notNull(),
+    targetImageUrl: text("target_image_url").notNull(),
+    score: numeric("score", { precision: 6, scale: 5 }),
+    status: text("status")
+      .notNull()
+      .$type<"ok" | "missing" | "error">(),
+    error: text("error"),
+    lastComputedAt: timestamp("last_computed_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("image_similarity_cache_provider_pair_uidx").on(
+      t.provider,
+      t.sourceImageUrl,
+      t.targetImageUrl
+    ),
+    index("image_similarity_cache_status_idx").on(t.status),
+    index("image_similarity_cache_updated_idx").on(t.updatedAt),
   ]
 );
 
@@ -349,6 +385,32 @@ export const productMatchDecisions = pgTable(
     ),
     index("product_match_decisions_user_idx").on(t.userId),
     index("product_match_decisions_decision_idx").on(t.decision),
+  ]
+);
+
+export const productMatchFeedbackEvents = pgTable(
+  "product_match_feedback_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    productMatchId: uuid("product_match_id")
+      .notNull()
+      .references(() => productMatches.id, { onDelete: "cascade" }),
+    action: reviewActionEnum("action").notNull(),
+    decision: matchDecisionEnum("decision"),
+    reasonTags: jsonb("reason_tags").notNull().$type<string[]>(),
+    scoreSnapshot: jsonb("score_snapshot").notNull(),
+    notes: text("notes"),
+    previousQogitaProductId: uuid("previous_qogita_product_id"),
+    remappedQogitaProductId: uuid("remapped_qogita_product_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("product_match_feedback_events_match_idx").on(t.productMatchId, t.createdAt),
+    index("product_match_feedback_events_user_idx").on(t.userId, t.createdAt),
+    index("product_match_feedback_events_action_idx").on(t.action),
   ]
 );
 

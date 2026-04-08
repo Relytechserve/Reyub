@@ -1,0 +1,30 @@
+{
+  "generatedAt": "2026-04-07T15:46:22.492Z",
+  "rowsAnalyzed": 5,
+  "queueSizeSuspicious": 2,
+  "outcomes": {
+    "approved": 2,
+    "rejected": 2,
+    "remapped": 1
+  },
+  "scorePatterns": {
+    "avgApprovedScore": 0.915,
+    "avgRejectedScore": 0.5,
+    "recommendedMinScore": 0.7075
+  },
+  "reasonTagHistogram": {
+    "good_pack_match": 1,
+    "ean_exact": 2,
+    "title_mismatch": 1,
+    "title_token_overlap": 2,
+    "brand_conflict": 1,
+    "conflict_brand_mismatch": 1,
+    "manual_verified": 1,
+    "wrong_supplier_variant": 1
+  },
+  "recommendations": [
+    "Raise auto-approve score floor to >= 0.708 when confidence=high.",
+    "Route all medium-confidence matches to Suspicious queue.",
+    "Penalize conflict_* reason tags in weighted scoring and require review override."
+  ]
+}

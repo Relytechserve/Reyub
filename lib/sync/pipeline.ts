@@ -21,7 +21,7 @@ import {
   formatGbpFromKeepaMinor,
   pickKeepaTimeseriesFields,
 } from "@/lib/keepa/product";
-import { keepaEansFromProduct } from "@/lib/keepa/utils";
+import { keepaEansFromProduct, keepaImageUrlsFromProduct } from "@/lib/keepa/utils";
 import { runAmazonQogitaMatching } from "@/lib/matching/amazon-qogita-sync";
 import {
   fetchOfferPages,
@@ -132,6 +132,9 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
   let matchesLinked = 0;
   let matchEanStage = 0;
   let matchFuzzyStage = 0;
+  let imageCoveragePct = 0;
+  let imageCompared = 0;
+  let imageInfluenced = 0;
 
   const maxOffers =
     Number(process.env.QOGITA_SYNC_MAX_OFFERS ?? "2000") || 2000;
@@ -219,6 +222,9 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     matchesWithQogitaEan: matchesLinked,
     matchEanStage,
     matchFuzzyStage,
+    imageCoveragePct,
+    imageCompared,
+    imageInfluenced,
     qogitaOffersPath: qogitaOffersEntryPath(),
     categoryFilterApplied: categoryIds.length > 0,
     categoryNote:
@@ -293,6 +299,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             qogitaId: row.qogitaId,
             ean: row.ean,
             title: row.title,
+            primaryImageUrl: row.primaryImageUrl,
+            imageUrls: row.imageUrls,
             brand: row.brand,
             categorySlug: row.categorySlug,
             currency: row.currency,
@@ -305,6 +313,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             set: {
               ean: sql`excluded.ean`,
               title: sql`excluded.title`,
+              primaryImageUrl: sql`excluded.primary_image_url`,
+              imageUrls: sql`excluded.image_urls`,
               brand: sql`excluded.brand`,
               categorySlug: sql`excluded.category_slug`,
               currency: sql`excluded.currency`,
@@ -460,6 +470,7 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
             const meta = rankByAsin.get(summary.asin);
             const eanCandidates = keepaEansFromProduct(kp);
             const primaryEan = eanCandidates[0] ?? null;
+            const { primaryImageUrl, imageUrls } = keepaImageUrlsFromProduct(kp);
 
             const amazonGbp = formatGbpFromKeepaMinor(summary.buyBoxMinor);
             const avg30Gbp = formatGbpFromKeepaMinor(summary.avg30BuyBoxMinor);
@@ -495,6 +506,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
                 bestsellerRank: meta?.rank ?? null,
                 title: summary.title,
                 primaryEan,
+                primaryImageUrl,
+                imageUrls,
                 metrics,
                 capturedAt: now,
               })
@@ -508,6 +521,8 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
                   bestsellerRank: sql`excluded.bestseller_rank`,
                   title: sql`excluded.title`,
                   primaryEan: sql`excluded.primary_ean`,
+                  primaryImageUrl: sql`excluded.primary_image_url`,
+                  imageUrls: sql`excluded.image_urls`,
                   metrics: sql`excluded.metrics`,
                   capturedAt: sql`excluded.captured_at`,
                   updatedAt: sql`now()`,
@@ -544,6 +559,9 @@ export async function runFullPipelineSync(): Promise<FullPipelineResult> {
     });
     matchEanStage = matchStats.eanMatches;
     matchFuzzyStage = matchStats.fuzzyMatches;
+    imageCoveragePct = matchStats.imageCoveragePct;
+    imageCompared = matchStats.imageCompared;
+    imageInfluenced = matchStats.imageInfluenced;
     matchesLinked = matchStats.eanMatches + matchStats.fuzzyMatches;
 
     await persistSyncRun(

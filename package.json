@@ -21,7 +21,9 @@
     "fill:target": "tsx scripts/fill-opportunities-target.ts",
     "import:qogita-excel": "tsx scripts/import-qogita-excel-catalog.ts",
     "import:qogita-excel:dry": "tsx scripts/import-qogita-excel-catalog.ts --dry-run",
-    "verify:sourcing": "tsx scripts/verify-sourcing.ts"
+    "verify:sourcing": "tsx scripts/verify-sourcing.ts",
+    "validate:integrity": "tsx scripts/validate-recommendation-integrity.ts",
+    "analyze:review-calibration": "tsx scripts/analyze-review-calibration.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.1",

@@ -25,6 +25,8 @@ import {
   prepareQogitaRow,
   type FuzzyMatchConfig,
 } from "@/lib/matching/title-similarity";
+import { evaluateMatchCandidate } from "@/lib/matching/match-scoring";
+import { ImageSimilarityService } from "@/lib/matching/image-similarity";
 
 type Db = ReturnType<typeof getDb>;
 
@@ -112,6 +114,7 @@ export function buildGtinToQogitaIdMap(
     qogitaId: string;
     ean: string | null;
     buyUnitPrice: string | null;
+    primaryImageUrl?: string | null;
   }[]
 ): Map<string, string> {
   const byKey = new Map<string, GtinTierBest>();
@@ -199,6 +202,9 @@ function tagsForGtinMatch(variant: boolean, multiNote: boolean): string[] {
 export type AmazonQogitaMatchResult = {
   eanMatches: number;
   fuzzyMatches: number;
+  imageCoveragePct: number;
+  imageCompared: number;
+  imageInfluenced: number;
 };
 
 export async function runAmazonQogitaMatching(
@@ -209,6 +215,11 @@ export async function runAmazonQogitaMatching(
   const now = options.now;
   let eanMatches = 0;
   let fuzzyMatches = 0;
+  const imageSimilarity = new ImageSimilarityService(db);
+  let imageCoverageTotal = 0;
+  let imageComparedTotal = 0;
+  let imageInfluencedConfidence = 0;
+  const imageDist = { lt20: 0, from20to50: 0, from50to80: 0, gte80: 0 };
 
   const qogitaRows = await db
     .select({
@@ -216,8 +227,13 @@ export async function runAmazonQogitaMatching(
       qogitaId: qogitaProducts.qogitaId,
       ean: qogitaProducts.ean,
       buyUnitPrice: qogitaProducts.buyUnitPrice,
+      primaryImageUrl: qogitaProducts.primaryImageUrl,
       title: qogitaProducts.title,
       brand: qogitaProducts.brand,
+      unitsPerPack: qogitaProducts.unitsPerPack,
+      packDescription: qogitaProducts.packDescription,
+      currency: qogitaProducts.currency,
+      stockUnits: qogitaProducts.stockUnits,
     })
     .from(qogitaProducts);
 
@@ -225,19 +241,83 @@ export async function runAmazonQogitaMatching(
 
   const catalog = await db.select().from(keepaCatalogItems);
 
-  async function upsertEanMatch(
+  const qogitaById = new Map(qogitaRows.map((row) => [row.id, row]));
+
+  const addImageDistribution = (score: number) => {
+    if (score < 0.2) {
+      imageDist.lt20 += 1;
+    } else if (score < 0.5) {
+      imageDist.from20to50 += 1;
+    } else if (score < 0.8) {
+      imageDist.from50to80 += 1;
+    } else {
+      imageDist.gte80 += 1;
+    }
+  };
+
+  const pickTieBrokenGtinHit = async (
+    keepaEanCandidates: string[],
+    keepaImageUrl: string | null
+  ): Promise<{ qogitaId: string; variant: boolean } | null> => {
+    const hit = findQogitaIdByGtinKeys(keepaEanCandidates, gtinIndex);
+    if (!hit) {
+      return null;
+    }
+    if (!keepaImageUrl) {
+      return { qogitaId: hit.qogitaId, variant: hit.variant };
+    }
+    const candidateIds = new Set<string>();
+    for (const raw of keepaEanCandidates) {
+      const keys = collectGtinKeysFromBarcode(raw);
+      for (const key of keys) {
+        for (const row of qogitaRows) {
+          if (row.ean && collectGtinKeysFromBarcode(row.ean).includes(key)) {
+            candidateIds.add(row.id);
+          }
+        }
+      }
+    }
+    if (candidateIds.size <= 1) {
+      return { qogitaId: hit.qogitaId, variant: hit.variant };
+    }
+    const top = [...candidateIds]
+      .map((id) => qogitaById.get(id))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .sort((a, b) => parseBuyPrice(a.buyUnitPrice) - parseBuyPrice(b.buyUnitPrice))
+      .slice(0, 2);
+    if (top.length < 2) {
+      return { qogitaId: hit.qogitaId, variant: hit.variant };
+    }
+    const aScore = await imageSimilarity.compare(keepaImageUrl, top[0].primaryImageUrl);
+    const bScore = await imageSimilarity.compare(keepaImageUrl, top[1].primaryImageUrl);
+    if (aScore.score != null) {
+      imageComparedTotal += 1;
+      addImageDistribution(aScore.score);
+    }
+    if (bScore.score != null) {
+      imageComparedTotal += 1;
+      addImageDistribution(bScore.score);
+    }
+    if (aScore.score != null && bScore.score != null) {
+      return {
+        qogitaId: aScore.score >= bScore.score ? top[0].id : top[1].id,
+        variant: hit.variant,
+      };
+    }
+    return { qogitaId: hit.qogitaId, variant: hit.variant };
+  };
+
+  async function upsertScoredMatch(
     item: (typeof catalog)[0],
     qpId: string,
-    reasonTags: string[]
+    candidateTags: string[],
+    confidence: "high" | "medium",
+    weightedScore: number
   ): Promise<void> {
     await ensureCanonicalForQogitaProductId(db, qpId);
-    const [refreshed] = await db
-      .select()
-      .from(qogitaProducts)
-      .where(eq(qogitaProducts.id, qpId))
-      .limit(1);
+    const [refreshed] = await db.select().from(qogitaProducts).where(eq(qogitaProducts.id, qpId)).limit(1);
     const canonicalId = refreshed?.canonicalProductId ?? null;
-    const qp = refreshed;
+    const qp = refreshed ?? qogitaById.get(qpId);
     if (!qp) {
       return;
     }
@@ -255,9 +335,9 @@ export async function runAmazonQogitaMatching(
         .set({
           qogitaProductId: qp.id,
           canonicalProductId: canonicalId,
-          confidence: "high",
-          reasonTags,
-          matchScore: null,
+          confidence,
+          reasonTags: candidateTags,
+          matchScore: weightedScore.toFixed(4),
           updatedAt: now,
         })
         .where(eq(productMatches.id, matchId));
@@ -269,8 +349,9 @@ export async function runAmazonQogitaMatching(
           canonicalProductId: canonicalId,
           channel: "amazon_uk",
           externalId: item.asin,
-          confidence: "high",
-          reasonTags,
+          confidence,
+          reasonTags: candidateTags,
+          matchScore: weightedScore.toFixed(4),
         })
         .returning({ id: productMatches.id });
       const ins = inserted[0];
@@ -300,12 +381,13 @@ export async function runAmazonQogitaMatching(
           buyUnitPrice: qp.buyUnitPrice,
           currency: qp.currency,
           stockUnits: qp.stockUnits,
+          brand: qp.brand,
+          unitsPerPack: qp.unitsPerPack,
+          packDescription: qp.packDescription,
         },
-        matchProvenance: reasonTags,
+        matchProvenance: candidateTags,
       },
     });
-
-    eanMatches += 1;
   }
 
   // —— Stage A: GTIN / EAN ladder ——
@@ -314,14 +396,56 @@ export async function runAmazonQogitaMatching(
     if (candidates.length === 0) {
       continue;
     }
-    const hit = findQogitaIdByGtinKeys(candidates, gtinIndex);
+    if (item.primaryImageUrl) {
+      imageCoverageTotal += 1;
+    }
+    const hit = await pickTieBrokenGtinHit(candidates, item.primaryImageUrl);
     if (!hit) {
       continue;
     }
     const multiNote = false;
     const tags = tagsForGtinMatch(hit.variant, multiNote);
     try {
-      await upsertEanMatch(item, hit.qogitaId, tags);
+      const qp = qogitaById.get(hit.qogitaId);
+      if (!qp) {
+        continue;
+      }
+      const imageResult = await imageSimilarity.compare(
+        item.primaryImageUrl,
+        qp.primaryImageUrl
+      );
+      const imageSignal = imageResult.score;
+      if (imageSignal != null) {
+        imageComparedTotal += 1;
+        addImageDistribution(imageSignal);
+      }
+      const score = evaluateMatchCandidate({
+        amazonTitle: item.title,
+        qogitaTitle: qp.title,
+        qogitaBrand: qp.brand,
+        eanMatch: true,
+        fromEanStage: true,
+        qogitaUnitsPerPack: qp.unitsPerPack,
+        qogitaPackDescription: qp.packDescription,
+        imageSignal,
+      });
+      const reasonTags = [...tags, ...score.reasonTags];
+      if (score.decision === "reject_candidate") {
+        continue;
+      }
+      const confidence: "high" | "medium" =
+        score.decision === "high" ? "high" : "medium";
+      await upsertScoredMatch(
+        item,
+        hit.qogitaId,
+        reasonTags,
+        confidence,
+        score.weightedScore
+      );
+      if (score.reasonTags.includes("conflict_image")) {
+        imageInfluencedConfidence += 1;
+      }
+      eanMatches += 1;
     } catch (e) {
       options.errors.push(
         `EAN match ${item.asin}: ${e instanceof Error ? e.message : String(e)}`
@@ -331,7 +455,13 @@ export async function runAmazonQogitaMatching(
 
   // —— Stage B: Title fuzzy (unmatched ASINs only) ——
   if (!envFuzzyEnabled() || qogitaRows.length === 0) {
-    return { eanMatches, fuzzyMatches };
+    return {
+      eanMatches,
+      fuzzyMatches,
+      imageCoveragePct: 0,
+      imageCompared: imageComparedTotal,
+      imageInfluenced: imageInfluencedConfidence,
+    };
   }
 
   const matchedAsins = new Set(
@@ -391,11 +521,41 @@ export async function runAmazonQogitaMatching(
       }
       const canonicalId = qp.canonicalProductId ?? null;
       const met = item.metrics as Record<string, unknown>;
+      if (item.primaryImageUrl) {
+        imageCoverageTotal += 1;
+      }
+      const imageResult = await imageSimilarity.compare(
+        item.primaryImageUrl,
+        qp.primaryImageUrl
+      );
+      const imageSignal = imageResult.score;
+      if (imageSignal != null) {
+        imageComparedTotal += 1;
+        addImageDistribution(imageSignal);
+      }
+      const score = evaluateMatchCandidate({
+        amazonTitle,
+        qogitaTitle: qp.title,
+        qogitaBrand: qp.brand,
+        eanMatch: false,
+        fromEanStage: false,
+        qogitaUnitsPerPack: qp.unitsPerPack,
+        qogitaPackDescription: qp.packDescription,
+        imageSignal,
+      });
       const reasonTags = [
         "title_token_jaccard",
         `jaccard:${best.score.toFixed(3)}`,
+        ...score.reasonTags,
       ];
-      const scoreStr = String(Math.min(0.9999, best.score));
+      if (score.decision === "reject_candidate") {
+        continue;
+      }
+      const confidence: "high" | "medium" =
+        score.decision === "high" ? "high" : "medium";
+      if (score.reasonTags.includes("conflict_image")) {
+        imageInfluencedConfidence += 1;
+      }
 
       const existingFuzzy = await getExistingMatch(
         db,
@@ -411,9 +571,9 @@ export async function runAmazonQogitaMatching(
           .set({
             qogitaProductId: qp.id,
             canonicalProductId: canonicalId,
-            confidence: "medium",
+            confidence,
             reasonTags,
-            matchScore: scoreStr,
+            matchScore: score.weightedScore.toFixed(4),
             updatedAt: now,
           })
           .where(eq(productMatches.id, matchId));
@@ -425,9 +585,9 @@ export async function runAmazonQogitaMatching(
             canonicalProductId: canonicalId,
             channel: "amazon_uk",
             externalId: item.asin,
-            confidence: "medium",
+            confidence,
             reasonTags,
-            matchScore: scoreStr,
+            matchScore: score.weightedScore.toFixed(4),
           })
           .returning({ id: productMatches.id });
         const ins = inserted[0];
@@ -471,5 +631,15 @@ export async function runAmazonQogitaMatching(
     }
   }
 
-  return { eanMatches, fuzzyMatches };
+  const imageCoveragePct = catalog.length > 0 ? (imageCoverageTotal / catalog.length) * 100 : 0;
+  console.info(
+    `[matching:image] coverage_pct=${imageCoveragePct.toFixed(1)} compared=${imageComparedTotal} influenced=${imageInfluencedConfidence} dist_lt20=${imageDist.lt20} dist_20_50=${imageDist.from20to50} dist_50_80=${imageDist.from50to80} dist_gte80=${imageDist.gte80}`
+  );
+  return {
+    eanMatches,
+    fuzzyMatches,
+    imageCoveragePct,
+    imageCompared: imageComparedTotal,
+    imageInfluenced: imageInfluencedConfidence,
+  };
 }

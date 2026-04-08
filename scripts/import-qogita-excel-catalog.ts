@@ -91,6 +91,52 @@ function cellStr(v: unknown): string {
   return "";
 }
 
+function cellUrl(v: unknown): string | null {
+  if (v == null) {
+    return null;
+  }
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      return trimmed;
+    }
+    return null;
+  }
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (typeof o.hyperlink === "string") {
+      const trimmed = o.hyperlink.trim();
+      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        return trimmed;
+      }
+    }
+    if (typeof o.formula === "string") {
+      // Excel formula shape:
+      // =HYPERLINK("https://api.qogita.com/variants/link/8809695678363/", "View Product")
+      const m = o.formula.match(/HYPERLINK\(\s*"([^"]+)"/i);
+      if (m?.[1]) {
+        const extracted = m[1].trim();
+        if (extracted.startsWith("http://") || extracted.startsWith("https://")) {
+          return extracted;
+        }
+      }
+    }
+    if (typeof o.text === "string") {
+      const t = o.text.trim();
+      if (t.startsWith("http://") || t.startsWith("https://")) {
+        return t;
+      }
+    }
+    if (typeof o.result === "string") {
+      const r = o.result.trim();
+      if (r.startsWith("http://") || r.startsWith("https://")) {
+        return r;
+      }
+    }
+  }
+  return null;
+}
+
 function cellNum(v: unknown): number | null {
   if (v == null || v === "") {
     return null;
@@ -191,8 +237,7 @@ function buildRow(
   const totalInv = cellInt(
     col(headers, cells, "Total Inventory of All Offers")
   );
-  const pl = cellStr(col(headers, cells, "Product Link"));
-  const productLink = pl.length > 0 ? pl : null;
+  const productLink = cellUrl(col(headers, cells, "Product Link"));
 
   const rawPayload: Record<string, unknown> = {};
   for (const [name, idx] of headers) {

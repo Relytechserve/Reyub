@@ -27,3 +27,13 @@ export function shouldSkipSyncOverwriteForDecision(
 export function isReviewedMatch(decision: MatchDecision): boolean {
   return decision === "approve";
 }
+
+export function allowReadyToBuyByReviewGate(
+  decision: MatchDecision,
+  reviewGateEnabled: boolean
+): boolean {
+  if (!reviewGateEnabled) {
+    return true;
+  }
+  return isReviewedMatch(decision);
+}

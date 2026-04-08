@@ -185,6 +185,8 @@ export function mapOfferToRow(offer: unknown): {
   qogitaId: string;
   ean: string | null;
   title: string;
+  primaryImageUrl: string | null;
+  imageUrls: string[];
   brand: string | null;
   categorySlug: string | null;
   currency: string;
@@ -216,6 +218,8 @@ export function mapOfferToRow(offer: unknown): {
     stringFrom(o, ["title", "name", "product_name"]) ||
     nestedString(o, ["title", "name"]) ||
     `Offer ${qogitaId}`;
+  const imageUrls = extractImageUrls(o);
+  const primaryImageUrl = imageUrls[0] ?? null;
 
   const brand =
     stringFrom(o, ["brand", "brand_name"]) || nestedString(o, ["brand"]);
@@ -242,6 +246,8 @@ export function mapOfferToRow(offer: unknown): {
     qogitaId,
     ean,
     title,
+    primaryImageUrl,
+    imageUrls,
     brand,
     categorySlug,
     currency: (currency || "EUR").slice(0, 8).toUpperCase(),
@@ -249,6 +255,60 @@ export function mapOfferToRow(offer: unknown): {
     stockUnits: stock,
     rawPayload: offer,
   };
+}
+
+function looksLikeImageUrl(raw: string): boolean {
+  const s = raw.trim();
+  if (!/^https?:\/\//i.test(s)) {
+    return false;
+  }
+  return /(\.jpg|\.jpeg|\.png|\.webp|\.gif|\/image|\/images|\/photo|\/photos)/i.test(s);
+}
+
+function extractImageUrls(root: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const stack: unknown[] = [root];
+  let guard = 0;
+  while (stack.length > 0 && guard++ < 400) {
+    const cur = stack.pop();
+    if (!cur) {
+      continue;
+    }
+    if (typeof cur === "string") {
+      if (looksLikeImageUrl(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        out.push(cur);
+      }
+      continue;
+    }
+    if (Array.isArray(cur)) {
+      for (const x of cur) {
+        stack.push(x);
+      }
+      continue;
+    }
+    if (typeof cur === "object") {
+      for (const [k, v] of Object.entries(cur as Record<string, unknown>)) {
+        const kl = k.toLowerCase();
+        const imageLikeKey =
+          kl.includes("image") ||
+          kl.includes("thumbnail") ||
+          kl.includes("photo") ||
+          kl.includes("media");
+        if (imageLikeKey && typeof v === "string" && looksLikeImageUrl(v) && !seen.has(v)) {
+          seen.add(v);
+          out.push(v);
+        } else if (v && typeof v === "object") {
+          stack.push(v);
+        } else if (typeof v === "string" && imageLikeKey && !seen.has(v) && looksLikeImageUrl(v)) {
+          seen.add(v);
+          out.push(v);
+        }
+      }
+    }
+  }
+  return out.slice(0, 12);
 }
 
 function pickQogitaId(o: Record<string, unknown>): string | null {
