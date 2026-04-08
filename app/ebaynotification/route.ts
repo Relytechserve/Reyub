@@ -15,9 +15,8 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const challengeCode = url.searchParams.get("challenge_code");
   const verificationToken = process.env.EBAY_VERIFICATION_TOKEN;
-  const endpoint =
-    process.env.EBAY_NOTIFICATION_ENDPOINT_URL ??
-    `${url.origin}/ebaynotification`;
+  // eBay expects the endpoint value to match the callback URL exactly (no query).
+  const endpoint = `${url.origin}${url.pathname}`;
 
   if (!challengeCode) {
     return NextResponse.json(
